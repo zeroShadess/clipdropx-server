@@ -3,10 +3,26 @@ import yt_dlp
 import os
 import sys
 import subprocess
+import base64
+import tempfile
 
 app = Flask(__name__)
-
 VIDEO_PATH = "video.mp4"
+
+def get_cookie_file():
+    """COOKIES_B64 env'den cookie dosyası oluşturur, path döner."""
+    b64 = os.environ.get("COOKIES_B64")
+    if not b64:
+        return None
+    try:
+        decoded = base64.b64decode(b64)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="wb")
+        tmp.write(decoded)
+        tmp.close()
+        return tmp.name
+    except Exception as e:
+        print(f"Cookie decode hatası: {e}")
+        return None
 
 @app.route("/download", methods=["POST"])
 def download():
@@ -15,11 +31,11 @@ def download():
     data = request.json
     url = data.get("url")
 
-    # eski dosyayı sil
     if os.path.exists(VIDEO_PATH):
         os.remove(VIDEO_PATH)
 
-    # 🔥 EN UYUMLU FORMAT (ANDROID FIX)
+    cookie_file = get_cookie_file()
+
     ydl_opts = {
         'format': 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]',
         'merge_output_format': 'mp4',
@@ -27,14 +43,22 @@ def download():
         'noplaylist': True,
     }
 
+    # ✅ Cookie varsa ekle
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-
         return {"status": "ok"}
-
     except Exception as e:
         return {"error": str(e)}, 500
+    finally:
+        # Temp cookie dosyasını temizle
+        if cookie_file and os.path.exists(cookie_file):
+            os.remove(cookie_file)
+
+# ... geri kalan route'lar aynı kalabilir
 
 
 @app.route("/file")
