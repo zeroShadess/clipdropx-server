@@ -25,18 +25,6 @@ def get_cookie_file():
         return None
 
 
-def get_deno_path():
-    paths = [
-        "/root/.deno/bin/deno",
-        "/home/user/.deno/bin/deno",
-        "/usr/local/bin/deno",
-    ]
-    for p in paths:
-        if os.path.exists(p):
-            return p
-    return None
-
-
 @app.route("/download", methods=["POST"])
 def download():
     global VIDEO_PATH
@@ -51,7 +39,6 @@ def download():
         os.remove(VIDEO_PATH)
 
     cookie_file = get_cookie_file()
-    deno_path = get_deno_path()
     is_youtube = "youtube.com" in url or "youtu.be" in url
 
     ydl_opts = {
@@ -64,9 +51,11 @@ def download():
     if cookie_file:
         ydl_opts['cookiefile'] = cookie_file
 
-    if deno_path:
+    if is_youtube:
         ydl_opts['extractor_args'] = {
-            'youtube': {'js_runtimes': [f'deno:{deno_path}']}
+            'youtube': {
+                'player_client': ['android', 'web']
+            }
         }
 
     try:
