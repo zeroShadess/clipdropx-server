@@ -1,91 +1,73 @@
-from flask import Flask, request, jsonify, send_file
-from yt_dlp import YoutubeDL
+from flask import Flask, request, send_file
+import yt_dlp
 import os
-import uuid
-import shutil
+import sys
+import subprocess
 
 app = Flask(__name__)
 
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+VIDEO_PATH = "video.mp4"
 
-
-# 🔥 Ana indirme endpointi
 @app.route("/download", methods=["POST"])
-def download_video():
+def download():
+    global VIDEO_PATH
+
+    data = request.json
+    url = data.get("url")
+
+    # eski dosyayı sil
+    if os.path.exists(VIDEO_PATH):
+        os.remove(VIDEO_PATH)
+
+    # 🔥 EN UYUMLU FORMAT (ANDROID FIX)
+    ydl_opts = {
+        'format': 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]',
+        'merge_output_format': 'mp4',
+        'outtmpl': 'video.%(ext)s',
+        'noplaylist': True,
+    }
+
     try:
-        data = request.get_json()
-        url = data.get("url")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
-        if not url:
-            return jsonify({"error": "URL missing"}), 400
-
-        file_id = str(uuid.uuid4())
-        output_path = f"{DOWNLOAD_DIR}/{file_id}.%(ext)s"
-
-        ydl_opts = {
-            "format": "bv*+ba/b",
-            "outtmpl": output_path,
-            "merge_output_format": "mp4",
-            "noplaylist": True,
-            "quiet": True,
-            "cookiefile": "cookies.txt",  # 🔥 YouTube fix
-            "retries": 3,
-            "fragment_retries": 3,
-            "concurrent_fragment_downloads": 1,
-        }
-
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-
-            filename = ydl.prepare_filename(info)
-            final_file = filename.replace(".webm", ".mp4").replace(".mkv", ".mp4")
-
-        return jsonify({
-            "status": "success",
-            "file_id": file_id,
-            "file": final_file
-        })
+        return {"status": "ok"}
 
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        return {"error": str(e)}, 500
 
 
-# 📥 Dosya alma endpointi
-@app.route("/file/<file_id>", methods=["GET"])
-def get_file(file_id):
-    try:
-        for f in os.listdir(DOWNLOAD_DIR):
-            if file_id in f:
-                return send_file(os.path.join(DOWNLOAD_DIR, f), as_attachment=True)
-
-        return jsonify({"error": "file not found"}), 404
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+@app.route("/file")
+def file():
+    return send_file(VIDEO_PATH, as_attachment=True)
 
 
-# 🧹 Temizleme endpointi
 @app.route("/delete", methods=["POST"])
-def delete_files():
+def delete():
+    global VIDEO_PATH
+
+    if os.path.exists(VIDEO_PATH):
+        os.remove(VIDEO_PATH)
+
+    return {"status": "deleted"}
+
+
+@app.route("/shutdown", methods=["POST"])
+def shutdown():
     try:
-        shutil.rmtree(DOWNLOAD_DIR)
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        if os.name == "nt":
+            subprocess.run(["shutdown", "/s", "/t", "0"], check=True)
+        elif sys.platform.startswith("linux"):
+            subprocess.run(["shutdown", "-h", "now"], check=True)
+        elif sys.platform.startswith("darwin"):
+            subprocess.run(["sudo", "shutdown", "-h", "now"], check=True)
+        else:
+            return {"error": "Unsupported platform"}, 500
 
-        return jsonify({"status": "deleted"})
-
+        return {"status": "ok"}
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# 🟢 Test endpoint
-@app.route("/")
-def home():
-    return "Server running 🚀"
+        return {"error": str(e)}, 500
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=5000)
