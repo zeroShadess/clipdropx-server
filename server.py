@@ -1,77 +1,54 @@
-from flask import Flask, request, send_file
-import yt_dlp
+from flask import Flask, request, send_file, jsonify
+from yt_dlp import YoutubeDL
 import os
 
 app = Flask(__name__)
 
-VIDEO_PATH = "video.mp4"
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+@app.route("/download", methods=["POST"])
+def download_video():
+    try:
+        url = request.json["url"]
+
+        ydl_opts = {
+            "format": "bv*+ba/b",
+            "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
+            "merge_output_format": "mp4",
+            "noplaylist": True,
+            "quiet": True
+        }
+
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+
+        return jsonify({
+            "status": "ok",
+            "file": filename
+        })
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+
+@app.route("/file")
+def get_file():
+    files = os.listdir(DOWNLOAD_DIR)
+    if not files:
+        return "No file", 404
+
+    latest = sorted(files)[-1]
+    return send_file(os.path.join(DOWNLOAD_DIR, latest), as_attachment=True)
 
 
 @app.route("/")
 def home():
-    return "ClipDropX Server Aktif"
-
-
-@app.route("/download", methods=["POST"])
-def download():
-    global VIDEO_PATH
-
-    data = request.json
-    url = data.get("url")
-
-    if not url:
-        return {"error": "URL yok"}, 400
-
-    # 🔥 ENV'den cookies al
-    cookies_data = os.environ.get("COOKIES")
-
-    if cookies_data:
-        with open("cookies.txt", "w", encoding="utf-8") as f:
-            f.write(cookies_data)
-
-    # eski video sil
-    if os.path.exists(VIDEO_PATH):
-        os.remove(VIDEO_PATH)
-
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4',
-        'outtmpl': VIDEO_PATH,
-        'noplaylist': True,
-
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0',
-            'Accept-Language': 'en-US,en;q=0.9'
-        },
-
-        'cookiefile': 'cookies.txt',
-
-        'nocheckcertificate': True,
-        'ignoreerrors': False,
-    }
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        return {"status": "ok"}
-
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-
-@app.route("/file")
-def file():
-    if os.path.exists(VIDEO_PATH):
-        return send_file(VIDEO_PATH, as_attachment=True)
-    return {"error": "Video yok"}, 404
-
-
-@app.route("/delete", methods=["POST"])
-def delete():
-    if os.path.exists(VIDEO_PATH):
-        os.remove(VIDEO_PATH)
-    return {"status": "deleted"}
-
+    return "Server running"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run()
