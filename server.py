@@ -38,25 +38,31 @@ def download():
     if os.path.exists(VIDEO_PATH):
         os.remove(VIDEO_PATH)
 
-    cookie_file = get_cookie_file()
     is_youtube = "youtube.com" in url or "youtu.be" in url
 
-    ydl_opts = {
-        'format': 'best[ext=mp4]/best' if is_youtube else 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]',
-        'merge_output_format': 'mp4',
-        'outtmpl': 'video.%(ext)s',
-        'noplaylist': True,
-    }
-
-    if cookie_file:
-        ydl_opts['cookiefile'] = cookie_file
-
+    # YouTube için cookie kullanma, ios client ile çöz
     if is_youtube:
-        ydl_opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['android', 'web']
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best',
+            'merge_output_format': 'mp4',
+            'outtmpl': 'video.%(ext)s',
+            'noplaylist': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android']
+                }
             }
         }
+    else:
+        cookie_file = get_cookie_file()
+        ydl_opts = {
+            'format': 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]',
+            'merge_output_format': 'mp4',
+            'outtmpl': 'video.%(ext)s',
+            'noplaylist': True,
+        }
+        if cookie_file:
+            ydl_opts['cookiefile'] = cookie_file
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -65,9 +71,6 @@ def download():
     except Exception as e:
         print(f"İndirme hatası: {e}")
         return {"error": str(e)}, 500
-    finally:
-        if cookie_file and os.path.exists(cookie_file):
-            os.remove(cookie_file)
 
 
 @app.route("/file")
