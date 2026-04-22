@@ -1,17 +1,10 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, send_file
 import yt_dlp
 import os
 
 app = Flask(__name__)
 
 VIDEO_PATH = "video.mp4"
-
-# 🔐 Render ENV → cookies.txt oluştur
-cookies_data = os.environ.get("COOKIES")
-
-if cookies_data:
-    with open("cookies.txt", "w", encoding="utf-8") as f:
-        f.write(cookies_data)
 
 
 @app.route("/")
@@ -27,59 +20,57 @@ def download():
     url = data.get("url")
 
     if not url:
-        return jsonify({"error": "URL yok"}), 400
+        return {"error": "URL yok"}, 400
 
-    # eski dosyayı sil
+    # 🔥 ENV'den cookies al
+    cookies_data = os.environ.get("COOKIES")
+
+    if cookies_data:
+        with open("cookies.txt", "w", encoding="utf-8") as f:
+            f.write(cookies_data)
+
+    # eski video sil
     if os.path.exists(VIDEO_PATH):
         os.remove(VIDEO_PATH)
 
     ydl_opts = {
-        # 🔥 MP4 garanti
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4',
-
         'outtmpl': VIDEO_PATH,
         'noplaylist': True,
 
-        # 🔥 bot bypass
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+            'User-Agent': 'Mozilla/5.0',
+            'Accept-Language': 'en-US,en;q=0.9'
         },
 
-        # 🔐 cookies
         'cookiefile': 'cookies.txt',
 
-        # 🔥 hata olursa devam et
-        'quiet': False,
-        'no_warnings': True
+        'nocheckcertificate': True,
+        'ignoreerrors': False,
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        if not os.path.exists(VIDEO_PATH):
-            return jsonify({"error": "Video indirilemedi"}), 500
-
-        return jsonify({"status": "ok"})
+        return {"status": "ok"}
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return {"error": str(e)}, 500
 
 
-@app.route("/file", methods=["GET"])
+@app.route("/file")
 def file():
-    if not os.path.exists(VIDEO_PATH):
-        return jsonify({"error": "Dosya yok"}), 404
-
-    return send_file(VIDEO_PATH, as_attachment=True)
+    if os.path.exists(VIDEO_PATH):
+        return send_file(VIDEO_PATH, as_attachment=True)
+    return {"error": "Video yok"}, 404
 
 
 @app.route("/delete", methods=["POST"])
 def delete():
     if os.path.exists(VIDEO_PATH):
         os.remove(VIDEO_PATH)
-
-    return jsonify({"status": "deleted"})
+    return {"status": "deleted"}
 
 
 if __name__ == "__main__":
