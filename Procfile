@@ -1,1 +1,1 @@
-web: gunicorn server:app
+web: curl -fsSL https://deno.land/install.sh | sh && python server.py

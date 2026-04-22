@@ -10,7 +10,6 @@ app = Flask(__name__)
 VIDEO_PATH = "video.mp4"
 
 def get_cookie_file():
-    """COOKIES_B64 env'den cookie dosyası oluşturur, path döner."""
     b64 = os.environ.get("COOKIES_B64")
     if not b64:
         return None
@@ -24,6 +23,17 @@ def get_cookie_file():
         print(f"Cookie decode hatası: {e}")
         return None
 
+def get_deno_path():
+    paths = [
+        "/root/.deno/bin/deno",
+        "/home/user/.deno/bin/deno",
+        "/usr/local/bin/deno",
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    return None
+
 @app.route("/download", methods=["POST"])
 def download():
     global VIDEO_PATH
@@ -31,10 +41,14 @@ def download():
     data = request.json
     url = data.get("url")
 
+    if not url:
+        return {"error": "URL eksik"}, 400
+
     if os.path.exists(VIDEO_PATH):
         os.remove(VIDEO_PATH)
 
     cookie_file = get_cookie_file()
+    deno_path = get_deno_path()
 
     ydl_opts = {
         'format': 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]',
@@ -43,36 +57,39 @@ def download():
         'noplaylist': True,
     }
 
-    # ✅ Cookie varsa ekle
     if cookie_file:
         ydl_opts['cookiefile'] = cookie_file
+
+    if deno_path:
+        ydl_opts['extractor_args'] = {
+            'youtube': {
+                'js_runtimes': [f'deno:{deno_path}']
+            }
+        }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         return {"status": "ok"}
     except Exception as e:
+        print(f"İndirme hatası: {e}")
         return {"error": str(e)}, 500
     finally:
-        # Temp cookie dosyasını temizle
         if cookie_file and os.path.exists(cookie_file):
             os.remove(cookie_file)
-
-# ... geri kalan route'lar aynı kalabilir
 
 
 @app.route("/file")
 def file():
+    if not os.path.exists(VIDEO_PATH):
+        return {"error": "Dosya bulunamadı"}, 404
     return send_file(VIDEO_PATH, as_attachment=True)
 
 
 @app.route("/delete", methods=["POST"])
 def delete():
-    global VIDEO_PATH
-
     if os.path.exists(VIDEO_PATH):
         os.remove(VIDEO_PATH)
-
     return {"status": "deleted"}
 
 
@@ -86,8 +103,7 @@ def shutdown():
         elif sys.platform.startswith("darwin"):
             subprocess.run(["sudo", "shutdown", "-h", "now"], check=True)
         else:
-            return {"error": "Unsupported platform"}, 500
-
+            return {"error": "Desteklenmeyen platform"}, 500
         return {"status": "ok"}
     except Exception as e:
         return {"error": str(e)}, 500
