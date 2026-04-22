@@ -38,10 +38,10 @@ def download():
     if os.path.exists(VIDEO_PATH):
         os.remove(VIDEO_PATH)
 
-    cookie_file = get_cookie_file()
     is_youtube = "youtube.com" in url or "youtu.be" in url
 
     if is_youtube:
+        # YouTube için cookie YOK, ios client kullan
         ydl_opts = {
             'format': 'best[ext=mp4]/best',
             'merge_output_format': 'mp4',
@@ -49,13 +49,13 @@ def download():
             'noplaylist': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ios']
+                    'player_client': ['ios', 'android']
                 }
             }
         }
-        if cookie_file:
-            ydl_opts['cookiefile'] = cookie_file
     else:
+        # Diğer platformlar için cookie kullan
+        cookie_file = get_cookie_file()
         ydl_opts = {
             'format': 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]',
             'merge_output_format': 'mp4',
@@ -72,9 +72,6 @@ def download():
     except Exception as e:
         print(f"İndirme hatası: {e}")
         return {"error": str(e)}, 500
-    finally:
-        if cookie_file and os.path.exists(cookie_file):
-            os.remove(cookie_file)
 
 
 @app.route("/file")
