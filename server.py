@@ -9,6 +9,7 @@ import tempfile
 app = Flask(__name__)
 VIDEO_PATH = "video.mp4"
 
+
 def get_cookie_file():
     b64 = os.environ.get("COOKIES_B64")
     if not b64:
@@ -23,6 +24,7 @@ def get_cookie_file():
         print(f"Cookie decode hatası: {e}")
         return None
 
+
 def get_deno_path():
     paths = [
         "/root/.deno/bin/deno",
@@ -33,6 +35,7 @@ def get_deno_path():
         if os.path.exists(p):
             return p
     return None
+
 
 @app.route("/download", methods=["POST"])
 def download():
@@ -49,9 +52,10 @@ def download():
 
     cookie_file = get_cookie_file()
     deno_path = get_deno_path()
+    is_youtube = "youtube.com" in url or "youtu.be" in url
 
     ydl_opts = {
-        'format': 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]',
+        'format': 'best[ext=mp4]/best' if is_youtube else 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]',
         'merge_output_format': 'mp4',
         'outtmpl': 'video.%(ext)s',
         'noplaylist': True,
@@ -62,9 +66,7 @@ def download():
 
     if deno_path:
         ydl_opts['extractor_args'] = {
-            'youtube': {
-                'js_runtimes': [f'deno:{deno_path}']
-            }
+            'youtube': {'js_runtimes': [f'deno:{deno_path}']}
         }
 
     try:

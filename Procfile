@@ -1,1 +1,1 @@
-web: curl -fsSL https://deno.land/install.sh | sh && python server.py
+web: curl -fsSL https://deno.land/install.sh | sh && export PATH="$HOME/.deno/bin:$PATH" && python server.py
