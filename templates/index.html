@@ -978,24 +978,18 @@ async function startDownload() {
     setStatus('İndiriliyor...', 'info');
 
     /* Step 3: GET /file/{id} */
-    const fileRes = await fetch(`${BASE_URL}/file/${requestId}`);
-    if (!fileRes.ok) throw new Error('Video alınamadı.');
+const downloadUrl = `${BASE_URL}/file/${requestId}`;
 
-    await animateProgress(85, 100, 600, 'Kaydediliyor...');
+/* Step 4: Trigger download */
+const a = document.createElement('a');
+a.href = downloadUrl;
+a.download = 'video.mp4';
+document.body.appendChild(a);
+a.click();
+a.remove();
 
-    /* Step 4: Trigger browser download */
-    const blob = await fileRes.blob();
-    const objUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = objUrl;
-    a.download = `video_${Date.now()}.mp4`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(objUrl), 10000);
-
-    /* Step 5: DELETE /delete/{id} */
-    fetch(`${BASE_URL}/delete/${requestId}`, { method: 'POST' }).catch(() => {});
+/* Step 5: DELETE (async) */
+fetch(`${BASE_URL}/delete/${requestId}`, { method: 'POST' }).catch(() => {});
 
     /* Success */
     addToHistory(url);
