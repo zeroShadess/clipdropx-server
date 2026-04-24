@@ -1,0 +1,1108 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClipDropX — Video İndirici</title>
+  <meta name="description" content="YouTube, Instagram, TikTok ve daha fazlasından video indir. 4K, 1080p, 720p kalite desteği." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ══════════════════════════════════════
+       CSS VARIABLES & RESET
+    ══════════════════════════════════════ */
+    :root {
+      --bg:        #0f1118;
+      --surface:   #1b1f2a;
+      --surface2:  #232838;
+      --surface3:  #2a2f3d;
+      --border:    rgba(255,255,255,0.07);
+      --border-g:  rgba(0,230,100,0.25);
+      --green:     #00e664;
+      --green-dim: #00b84e;
+      --green-glow:rgba(0,230,100,0.18);
+      --text:      #f0f2f8;
+      --muted:     #8890a8;
+      --faint:     #454d62;
+      --red:       #ff4f4f;
+      --gold:      #ffd166;
+      --blue:      #4facfe;
+
+      --r:  14px;
+      --rl: 20px;
+      --rp: 999px;
+      --tr: .22s cubic-bezier(.4,0,.2,1);
+      --font: 'Outfit', sans-serif;
+      --mono: 'JetBrains Mono', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      overflow-x: hidden;
+      cursor: default;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button { font-family: var(--font); cursor: pointer; }
+
+    /* ══════════════════════════════════════
+       ANIMATED BACKGROUND
+    ══════════════════════════════════════ */
+    .bg-canvas {
+      position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden;
+    }
+    .orb {
+      position: absolute; border-radius: 50%;
+      filter: blur(90px); opacity: .12;
+      animation: drift 12s ease-in-out infinite alternate;
+    }
+    .orb-1 { width:600px;height:600px;background:radial-gradient(circle,#00e664,transparent);top:-200px;left:-100px;animation-delay:0s; }
+    .orb-2 { width:400px;height:400px;background:radial-gradient(circle,#4facfe,transparent);bottom:-100px;right:-80px;animation-delay:4s; }
+    .orb-3 { width:300px;height:300px;background:radial-gradient(circle,#ffd166,transparent);top:40%;left:60%;animation-delay:7s; }
+
+    @keyframes drift {
+      from { transform: translate(0,0) scale(1); }
+      to   { transform: translate(40px,30px) scale(1.1); }
+    }
+
+    .noise-overlay {
+      position: fixed; inset: 0; pointer-events: none; z-index: 1;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+      opacity: 0.025;
+    }
+
+    /* ══════════════════════════════════════
+       LAYOUT
+    ══════════════════════════════════════ */
+    .wrapper {
+      position: relative; z-index: 2;
+      max-width: 820px; margin: 0 auto;
+      padding: 0 1.2rem;
+    }
+
+    /* ══════════════════════════════════════
+       HEADER
+    ══════════════════════════════════════ */
+    header {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: blur(20px) saturate(1.5);
+      -webkit-backdrop-filter: blur(20px) saturate(1.5);
+      background: rgba(15,17,24,.8);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header-inner {
+      max-width: 820px; margin: 0 auto;
+      padding: .9rem 1.2rem;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+
+    .logo {
+      display: flex; align-items: center; gap: .55rem;
+    }
+    .logo-icon {
+      width: 34px; height: 34px;
+      background: var(--green);
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem;
+      box-shadow: 0 0 18px var(--green-glow);
+      animation: icon-pulse 3s ease-in-out infinite;
+    }
+    @keyframes icon-pulse {
+      0%,100% { box-shadow: 0 0 14px var(--green-glow); }
+      50%      { box-shadow: 0 0 28px rgba(0,230,100,.35); }
+    }
+    .logo-text {
+      font-size: 1.2rem; font-weight: 800;
+      letter-spacing: -.03em; color: var(--text);
+    }
+    .logo-text span { color: var(--green); }
+
+    .header-badge {
+      font-size: .72rem; font-weight: 600;
+      background: rgba(0,230,100,.1);
+      border: 1px solid var(--border-g);
+      color: var(--green);
+      border-radius: var(--rp);
+      padding: .25rem .8rem;
+      letter-spacing: .04em;
+    }
+
+    /* ══════════════════════════════════════
+       HERO
+    ══════════════════════════════════════ */
+    .hero {
+      padding: 4.5rem 0 3.5rem;
+      text-align: center;
+    }
+
+    .hero-eyebrow {
+      display: inline-flex; align-items: center; gap: .4rem;
+      font-size: .75rem; font-weight: 600; letter-spacing: .1em;
+      color: var(--muted); text-transform: uppercase;
+      margin-bottom: 1.2rem;
+      animation: fade-up .6s ease both;
+    }
+    .hero-eyebrow::before, .hero-eyebrow::after {
+      content: ''; flex: 1; height: 1px;
+      width: 28px;
+      background: linear-gradient(90deg, transparent, var(--faint));
+    }
+    .hero-eyebrow::after { background: linear-gradient(90deg, var(--faint), transparent); }
+
+    .hero h1 {
+      font-size: clamp(2.2rem, 6vw, 3.8rem);
+      font-weight: 900; line-height: 1.05;
+      letter-spacing: -.04em;
+      color: var(--text);
+      animation: fade-up .65s .08s ease both;
+    }
+    .hero h1 .accent { color: var(--green); }
+
+    .hero-sub {
+      margin-top: 1rem;
+      font-size: 1rem; color: var(--muted); font-weight: 300;
+      animation: fade-up .65s .16s ease both;
+    }
+
+    @keyframes fade-up {
+      from { opacity:0; transform:translateY(18px); }
+      to   { opacity:1; transform:translateY(0); }
+    }
+
+    /* ══════════════════════════════════════
+       MAIN CARD
+    ══════════════════════════════════════ */
+    .main-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--rl);
+      padding: 1.8rem;
+      display: flex; flex-direction: column; gap: 1.3rem;
+      box-shadow: 0 24px 64px rgba(0,0,0,.4);
+      animation: fade-up .7s .24s ease both;
+      position: relative; overflow: hidden;
+    }
+    .main-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--green), transparent);
+      opacity: .6;
+    }
+
+    /* URL Input */
+    .input-group {
+      display: flex; gap: .6rem;
+      background: var(--surface3);
+      border: 1.5px solid var(--border);
+      border-radius: var(--r);
+      padding: .5rem .5rem .5rem 1rem;
+      transition: border-color var(--tr), box-shadow var(--tr);
+    }
+    .input-group:focus-within {
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px var(--green-glow);
+    }
+    .input-icon { font-size: 1.1rem; opacity: .5; flex-shrink: 0; align-self: center; }
+
+    #urlInput {
+      flex: 1; background: none; border: none; outline: none;
+      font-family: var(--font); font-size: .95rem;
+      color: var(--text); min-width: 0;
+    }
+    #urlInput::placeholder { color: var(--faint); }
+
+    .btn-clear {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--muted); border-radius: 8px;
+      padding: .4rem .7rem; font-size: .8rem;
+      transition: all var(--tr); flex-shrink: 0;
+    }
+    .btn-clear:hover { color: var(--text); border-color: var(--faint); }
+
+    /* Quality + History row */
+    .row-controls {
+      display: flex; align-items: center; gap: .8rem; flex-wrap: wrap;
+    }
+
+    .quality-label {
+      font-size: .75rem; color: var(--muted); font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .quality-chips {
+      display: flex; gap: .4rem; flex-wrap: wrap;
+    }
+    .chip {
+      background: var(--surface3);
+      border: 1.5px solid var(--border);
+      color: var(--muted);
+      border-radius: var(--rp);
+      padding: .3rem .85rem;
+      font-size: .78rem; font-weight: 600;
+      cursor: pointer;
+      transition: all var(--tr);
+    }
+    .chip:hover { border-color: var(--green); color: var(--text); }
+    .chip.active {
+      background: rgba(0,230,100,.12);
+      border-color: var(--green);
+      color: var(--green);
+    }
+
+    /* Progress */
+    .progress-wrap { display: flex; flex-direction: column; gap: .5rem; }
+
+    .progress-bar-track {
+      height: 6px; background: var(--surface3);
+      border-radius: var(--rp); overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, var(--green-dim), var(--green));
+      border-radius: var(--rp);
+      transition: width .15s ease;
+      box-shadow: 0 0 12px var(--green-glow);
+    }
+
+    .progress-meta {
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .progress-status { font-size: .82rem; color: var(--muted); }
+    .progress-pct {
+      font-family: var(--mono);
+      font-size: .82rem; color: var(--green);
+    }
+
+    /* Download button */
+    .btn-download {
+      width: 100%;
+      background: var(--green);
+      color: #0a1200;
+      border: none;
+      border-radius: var(--r);
+      padding: .95rem;
+      font-size: 1rem; font-weight: 800;
+      letter-spacing: .01em;
+      position: relative; overflow: hidden;
+      transition: background var(--tr), transform var(--tr), box-shadow var(--tr);
+      display: flex; align-items: center; justify-content: center; gap: .5rem;
+    }
+    .btn-download:hover:not(:disabled) {
+      background: #00ff6e;
+      transform: translateY(-2px);
+      box-shadow: 0 10px 36px rgba(0,230,100,.35);
+    }
+    .btn-download:active:not(:disabled) { transform: translateY(0); }
+    .btn-download:disabled {
+      opacity: .55; cursor: not-allowed;
+    }
+    .btn-download .loader {
+      display: none;
+      width: 18px; height: 18px;
+      border: 2.5px solid rgba(0,0,0,.3);
+      border-top-color: #0a1200;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    .btn-download.loading .btn-label { opacity: 0; }
+    .btn-download.loading .loader { display: block; position: absolute; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Status message */
+    .status-msg {
+      text-align: center; font-size: .83rem;
+      min-height: 1.2rem; transition: color var(--tr);
+    }
+    .status-msg.success { color: var(--green); }
+    .status-msg.error   { color: var(--red); }
+    .status-msg.info    { color: var(--muted); }
+
+    /* ══════════════════════════════════════
+       HISTORY
+    ══════════════════════════════════════ */
+    .history-section {
+      margin-top: 1.5rem;
+      animation: fade-up .7s .32s ease both;
+    }
+    .history-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: .8rem;
+    }
+    .section-title {
+      font-size: .78rem; font-weight: 700;
+      color: var(--muted); text-transform: uppercase; letter-spacing: .1em;
+    }
+    .btn-clear-hist {
+      font-size: .72rem; color: var(--faint);
+      background: none; border: none;
+      transition: color var(--tr);
+    }
+    .btn-clear-hist:hover { color: var(--red); }
+
+    .history-list {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      max-height: 140px; overflow-y: auto;
+      scrollbar-width: thin; scrollbar-color: var(--faint) transparent;
+    }
+    .history-item {
+      display: flex; align-items: center; gap: .6rem;
+      padding: .65rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: .8rem; color: var(--muted);
+      transition: background var(--tr);
+      cursor: pointer;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-item:hover { background: var(--surface2); color: var(--text); }
+    .history-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--green); flex-shrink: 0;
+    }
+    .history-url {
+      flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* ══════════════════════════════════════
+       DIVIDER
+    ══════════════════════════════════════ */
+    .divider {
+      margin: 3.5rem 0 2.5rem;
+      display: flex; align-items: center; gap: 1rem;
+    }
+    .divider-line { flex: 1; height: 1px; background: var(--border); }
+    .divider-text {
+      font-size: .72rem; font-weight: 700;
+      color: var(--faint); text-transform: uppercase; letter-spacing: .12em;
+      white-space: nowrap;
+    }
+
+    /* ══════════════════════════════════════
+       INFO CARDS GRID
+    ══════════════════════════════════════ */
+    .cards-title {
+      font-size: 1.55rem; font-weight: 800; letter-spacing: -.03em;
+      margin-bottom: .4rem;
+    }
+    .cards-sub {
+      font-size: .88rem; color: var(--muted); font-weight: 300;
+      margin-bottom: 1.8rem;
+    }
+
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 1rem;
+    }
+
+    .info-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--rl);
+      padding: 1.5rem;
+      display: flex; flex-direction: column; gap: .9rem;
+      transition: transform var(--tr), border-color var(--tr), box-shadow var(--tr);
+      position: relative; overflow: hidden;
+    }
+    .info-card::after {
+      content: '';
+      position: absolute; inset: 0;
+      opacity: 0;
+      transition: opacity var(--tr);
+      background: linear-gradient(135deg, rgba(255,255,255,.02), transparent);
+    }
+    .info-card:hover { transform: translateY(-4px); box-shadow: 0 16px 48px rgba(0,0,0,.35); }
+    .info-card:hover::after { opacity: 1; }
+
+    .info-card.green:hover  { border-color: rgba(0,230,100,.35); }
+    .info-card.blue:hover   { border-color: rgba(79,172,254,.35); }
+    .info-card.gold:hover   { border-color: rgba(255,209,102,.35); }
+    .info-card.red:hover    { border-color: rgba(255,79,79,.35); }
+
+    .card-icon {
+      width: 44px; height: 44px;
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.25rem;
+    }
+    .card-icon.green { background: rgba(0,230,100,.12); }
+    .card-icon.blue  { background: rgba(79,172,254,.12); }
+    .card-icon.gold  { background: rgba(255,209,102,.12); }
+    .card-icon.red   { background: rgba(255,79,79,.12); }
+
+    .card-title {
+      font-size: .95rem; font-weight: 700; letter-spacing: -.01em;
+    }
+    .card-desc {
+      font-size: .82rem; color: var(--muted); line-height: 1.6; font-weight: 300;
+    }
+
+    /* ══════════════════════════════════════
+       HOW IT WORKS STEPS
+    ══════════════════════════════════════ */
+    .steps-section { margin-top: 3rem; }
+
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1.2rem;
+      margin-top: 1.5rem;
+    }
+
+    .step-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 1.4rem;
+      display: flex; flex-direction: column; gap: .7rem;
+      position: relative;
+    }
+    .step-card::before {
+      content: '';
+      position: absolute; top: 0; left: 1.4rem;
+      width: 32px; height: 2px;
+      background: var(--green);
+      border-radius: 0 0 2px 2px;
+    }
+
+    .step-num {
+      font-family: var(--mono);
+      font-size: .7rem; color: var(--green);
+      font-weight: 500; letter-spacing: .08em;
+    }
+    .step-title {
+      font-size: .92rem; font-weight: 700;
+    }
+    .step-desc {
+      font-size: .79rem; color: var(--muted); line-height: 1.55;
+    }
+
+    /* ══════════════════════════════════════
+       PLATFORMS
+    ══════════════════════════════════════ */
+    .platforms-section { margin-top: 3rem; }
+
+    .platforms-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: .8rem;
+      margin-top: 1.5rem;
+    }
+
+    .platform-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 1.1rem;
+      display: flex; flex-direction: column; align-items: center; gap: .55rem;
+      transition: transform var(--tr), border-color var(--tr);
+      text-align: center;
+    }
+    .platform-card:hover { transform: translateY(-3px); border-color: var(--faint); }
+
+    .platform-emoji { font-size: 1.7rem; }
+    .platform-name { font-size: .8rem; font-weight: 600; color: var(--text); }
+    .platform-badge {
+      font-size: .62rem; font-weight: 600;
+      border-radius: var(--rp); padding: .15rem .5rem;
+      letter-spacing: .04em;
+    }
+    .platform-badge.supported { background: rgba(0,230,100,.12); color: var(--green); }
+    .platform-badge.partial   { background: rgba(255,209,102,.12); color: var(--gold); }
+
+    /* ══════════════════════════════════════
+       QUALITY TABLE
+    ══════════════════════════════════════ */
+    .quality-section { margin-top: 3rem; }
+
+    .quality-table {
+      margin-top: 1.5rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
+    }
+    .qt-row {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr 1.5fr;
+      padding: .8rem 1.2rem;
+      border-bottom: 1px solid var(--border);
+      align-items: center;
+      transition: background var(--tr);
+    }
+    .qt-row:last-child { border-bottom: none; }
+    .qt-row:hover { background: var(--surface2); }
+    .qt-row.header { background: var(--surface3); }
+
+    .qt-label { font-size: .75rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .qt-val { font-size: .83rem; color: var(--text); }
+    .qt-val.mono { font-family: var(--mono); font-size: .78rem; color: var(--green); }
+
+    .tag {
+      display: inline-block; font-size: .65rem; font-weight: 700;
+      border-radius: var(--rp); padding: .15rem .5rem;
+      letter-spacing: .04em;
+    }
+    .tag.green { background: rgba(0,230,100,.12); color: var(--green); }
+    .tag.gold  { background: rgba(255,209,102,.12); color: var(--gold); }
+    .tag.blue  { background: rgba(79,172,254,.12);  color: var(--blue); }
+
+    /* ══════════════════════════════════════
+       FOOTER
+    ══════════════════════════════════════ */
+    footer {
+      margin-top: 5rem;
+      border-top: 1px solid var(--border);
+      padding: 2rem 0 3rem;
+      text-align: center;
+    }
+    .footer-logo {
+      font-size: 1rem; font-weight: 800; letter-spacing: -.02em;
+      margin-bottom: .5rem;
+    }
+    .footer-logo span { color: var(--green); }
+    .footer-text { font-size: .78rem; color: var(--faint); }
+    .footer-links {
+      display: flex; justify-content: center; gap: 1.5rem;
+      margin-top: 1.2rem;
+    }
+    .footer-links a {
+      font-size: .78rem; color: var(--faint);
+      transition: color var(--tr);
+    }
+    .footer-links a:hover { color: var(--green); }
+
+    /* ══════════════════════════════════════
+       RESPONSIVE
+    ══════════════════════════════════════ */
+    @media (max-width: 600px) {
+      .hero { padding: 3rem 0 2.5rem; }
+      .hero h1 { font-size: 2rem; }
+      .qt-row { grid-template-columns: 1fr 1fr; gap: .3rem; }
+      .qt-row .qt-col:nth-child(3),
+      .qt-row .qt-col:nth-child(4) { display: none; }
+      .header-badge { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Animated BG -->
+<div class="bg-canvas" aria-hidden="true">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+</div>
+<div class="noise-overlay" aria-hidden="true"></div>
+
+<!-- ══ HEADER ══ -->
+<header>
+  <div class="header-inner">
+    <div class="logo">
+      <div class="logo-icon">⬇</div>
+      <span class="logo-text">Clip<span>Drop</span>X</span>
+    </div>
+    <div class="header-badge">Web Edition · v2.0</div>
+  </div>
+</header>
+
+<!-- ══ MAIN ══ -->
+<main>
+  <div class="wrapper">
+
+    <!-- HERO -->
+    <section class="hero">
+      <div class="hero-eyebrow">Video İndirici</div>
+      <h1>Her platformdan<br /><span class="accent">HD kalitede</span> indir</h1>
+      <p class="hero-sub">YouTube, Instagram, TikTok ve daha fazlası. 4K'ya kadar destek.</p>
+    </section>
+
+    <!-- MAIN CARD -->
+    <div class="main-card">
+
+      <!-- URL input -->
+      <div class="input-group">
+        <span class="input-icon">🔗</span>
+        <input
+          type="url"
+          id="urlInput"
+          placeholder="Video linkini buraya yapıştır..."
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button class="btn-clear" id="btnClear" title="Temizle">✕ Temizle</button>
+      </div>
+
+      <!-- Quality chips -->
+      <div class="row-controls">
+        <span class="quality-label">Kalite:</span>
+        <div class="quality-chips" id="qualityChips">
+          <button class="chip" data-q="2160">4K</button>
+          <button class="chip active" data-q="1080">1080p</button>
+          <button class="chip" data-q="720">720p</button>
+          <button class="chip" data-q="480">480p</button>
+          <button class="chip" data-q="best">En iyi</button>
+        </div>
+      </div>
+
+      <!-- Progress -->
+      <div class="progress-wrap" id="progressWrap" style="display:none">
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-meta">
+          <span class="progress-status" id="progressStatus">Başlatılıyor...</span>
+          <span class="progress-pct" id="progressPct">%0</span>
+        </div>
+      </div>
+
+      <!-- Download button -->
+      <button class="btn-download" id="btnDownload">
+        <span class="btn-label">⬇ İndir</span>
+        <span class="loader"></span>
+      </button>
+
+      <!-- Status -->
+      <p class="status-msg info" id="statusMsg"></p>
+
+    </div><!-- /main-card -->
+
+    <!-- HISTORY -->
+    <div class="history-section" id="historySection" style="display:none">
+      <div class="history-header">
+        <span class="section-title">⏱ Son İndirmeler</span>
+        <button class="btn-clear-hist" id="btnClearHistory">Temizle</button>
+      </div>
+      <div class="history-list" id="historyList"></div>
+    </div>
+
+    <!-- ══ INFO CARDS ══ -->
+    <div class="divider">
+      <div class="divider-line"></div>
+      <span class="divider-text">Neden ClipDropX</span>
+      <div class="divider-line"></div>
+    </div>
+
+    <div>
+      <h2 class="cards-title">Hızlı · Güvenli · Ücretsiz</h2>
+      <p class="cards-sub">Tek yapman gereken linki yapıştırmak.</p>
+
+      <div class="cards-grid">
+        <div class="info-card green">
+          <div class="card-icon green">⚡</div>
+          <div class="card-title">Yüksek Hız</div>
+          <div class="card-desc">Optimize edilmiş sunucu altyapısı sayesinde indirmeler saniyeler içinde başlar.</div>
+        </div>
+        <div class="info-card blue">
+          <div class="card-icon blue">🔒</div>
+          <div class="card-title">Veri Güvenliği</div>
+          <div class="card-desc">Linkler sunucuda saklanmaz. İndirme tamamlandıktan hemen sonra silinir.</div>
+        </div>
+        <div class="info-card gold">
+          <div class="card-icon gold">🎬</div>
+          <div class="card-title">4K Destek</div>
+          <div class="card-desc">2160p'ye kadar kalite seçeneği. Orijinal video kalitesini koru.</div>
+        </div>
+        <div class="info-card red">
+          <div class="card-icon red">📱</div>
+          <div class="card-title">Tüm Cihazlar</div>
+          <div class="card-desc">Masaüstü, tablet ve mobilde sorunsuz çalışır. Uygulama yüklemeye gerek yok.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HOW IT WORKS -->
+    <div class="steps-section">
+      <div class="divider">
+        <div class="divider-line"></div>
+        <span class="divider-text">Nasıl Çalışır</span>
+        <div class="divider-line"></div>
+      </div>
+
+      <div class="steps-grid">
+        <div class="step-card">
+          <span class="step-num">ADIM 01</span>
+          <div class="step-title">Linki Kopyala</div>
+          <div class="step-desc">İndirmek istediğin videoya git, paylaş düğmesinden bağlantıyı kopyala.</div>
+        </div>
+        <div class="step-card">
+          <span class="step-num">ADIM 02</span>
+          <div class="step-title">Yapıştır</div>
+          <div class="step-desc">Linki yukarıdaki kutuya yapıştır. Tüm URL formatları otomatik tanınır.</div>
+        </div>
+        <div class="step-card">
+          <span class="step-num">ADIM 03</span>
+          <div class="step-title">Kalite Seç</div>
+          <div class="step-desc">4K, 1080p, 720p veya "En iyi" seçeneğinden birini seç.</div>
+        </div>
+        <div class="step-card">
+          <span class="step-num">ADIM 04</span>
+          <div class="step-title">İndir</div>
+          <div class="step-desc">İndir butonuna bas, video cihazına kaydedilsin.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PLATFORMS -->
+    <div class="platforms-section">
+      <div class="divider">
+        <div class="divider-line"></div>
+        <span class="divider-text">Desteklenen Platformlar</span>
+        <div class="divider-line"></div>
+      </div>
+
+      <div class="platforms-grid">
+        <div class="platform-card">
+          <span class="platform-emoji">▶️</span>
+          <span class="platform-name">YouTube</span>
+          <span class="platform-badge supported">Tam Destek</span>
+        </div>
+        <div class="platform-card">
+          <span class="platform-emoji">📸</span>
+          <span class="platform-name">Instagram</span>
+          <span class="platform-badge supported">Tam Destek</span>
+        </div>
+        <div class="platform-card">
+          <span class="platform-emoji">🎵</span>
+          <span class="platform-name">TikTok</span>
+          <span class="platform-badge supported">Tam Destek</span>
+        </div>
+        <div class="platform-card">
+          <span class="platform-emoji">🐦</span>
+          <span class="platform-name">Twitter/X</span>
+          <span class="platform-badge supported">Tam Destek</span>
+        </div>
+        <div class="platform-card">
+          <span class="platform-emoji">👾</span>
+          <span class="platform-name">Reddit</span>
+          <span class="platform-badge supported">Tam Destek</span>
+        </div>
+        <div class="platform-card">
+          <span class="platform-emoji">📘</span>
+          <span class="platform-name">Facebook</span>
+          <span class="platform-badge partial">Kısmi</span>
+        </div>
+        <div class="platform-card">
+          <span class="platform-emoji">🎮</span>
+          <span class="platform-name">Twitch</span>
+          <span class="platform-badge partial">Kısmi</span>
+        </div>
+        <div class="platform-card">
+          <span class="platform-emoji">🎞</span>
+          <span class="platform-name">Vimeo</span>
+          <span class="platform-badge supported">Tam Destek</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- QUALITY TABLE -->
+    <div class="quality-section">
+      <div class="divider">
+        <div class="divider-line"></div>
+        <span class="divider-text">Kalite Karşılaştırması</span>
+        <div class="divider-line"></div>
+      </div>
+
+      <div class="quality-table">
+        <div class="qt-row header">
+          <div class="qt-col qt-label">Kalite</div>
+          <div class="qt-col qt-label">Çözünürlük</div>
+          <div class="qt-col qt-label">Boyut (dk. başına)</div>
+          <div class="qt-col qt-label">Kullanım Önerisi</div>
+        </div>
+        <div class="qt-row">
+          <div class="qt-col qt-val"><span class="tag gold">4K</span></div>
+          <div class="qt-col qt-val mono">3840 × 2160</div>
+          <div class="qt-col qt-val">~700 MB</div>
+          <div class="qt-col qt-val">TV, büyük ekran</div>
+        </div>
+        <div class="qt-row">
+          <div class="qt-col qt-val"><span class="tag green">1080p</span></div>
+          <div class="qt-col qt-val mono">1920 × 1080</div>
+          <div class="qt-col qt-val">~150 MB</div>
+          <div class="qt-col qt-val">Masaüstü, laptop</div>
+        </div>
+        <div class="qt-row">
+          <div class="qt-col qt-val"><span class="tag blue">720p</span></div>
+          <div class="qt-col qt-val mono">1280 × 720</div>
+          <div class="qt-col qt-val">~80 MB</div>
+          <div class="qt-col qt-val">Mobil, tablet</div>
+        </div>
+        <div class="qt-row">
+          <div class="qt-col qt-val"><span class="tag">480p</span></div>
+          <div class="qt-col qt-val mono">854 × 480</div>
+          <div class="qt-col qt-val">~40 MB</div>
+          <div class="qt-col qt-val">Düşük data, paylaşım</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /wrapper -->
+</main>
+
+<!-- ══ FOOTER ══ -->
+<footer>
+  <div class="wrapper">
+    <div class="footer-logo">Clip<span>Drop</span>X</div>
+    <p class="footer-text">Sadece kişisel kullanım için. Telif hakkı olan içeriklere dikkat edin.</p>
+    <div class="footer-links">
+      <a href="#">Gizlilik</a>
+      <a href="#">Kullanım Koşulları</a>
+      <a href="#">İletişim</a>
+    </div>
+  </div>
+</footer>
+
+<!-- ══ SCRIPT ══ -->
+<script>
+'use strict';
+
+// Dinamik BASE_URL (web + mobil app için)
+let BASE_URL;
+
+if (window.location.protocol === 'file:' || window.location.hostname === '') {
+  // Flutter webview'de local file'dan açılıyor
+  // Android emulator: 10.0.2.2 (PC'ye erişim)
+  // Android cihaz: device.local veya IP adresi
+  BASE_URL = 'http://10.0.2.2:5000'; // Android emulator
+  // Gerçek cihazda: BASE_URL = 'http://192.168.x.x:5000'; // PC'nin IP'sini gir
+} else if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+  // Local web (Live Server vs)
+  BASE_URL = 'http://127.0.0.1:5000';
+} else {
+  // Production (Render.com vs)
+  BASE_URL = window.location.origin;
+}
+
+/* State */
+const state = {
+  quality: '1080',
+  loading: false,
+  history: JSON.parse(localStorage.getItem('cdx-history') || '[]'),
+};
+
+/* DOM refs */
+const urlInput     = document.getElementById('urlInput');
+const btnDownload  = document.getElementById('btnDownload');
+const btnClear     = document.getElementById('btnClear');
+const btnClearHist = document.getElementById('btnClearHistory');
+const progressWrap = document.getElementById('progressWrap');
+const progressFill = document.getElementById('progressFill');
+const progressStatus = document.getElementById('progressStatus');
+const progressPct  = document.getElementById('progressPct');
+const statusMsg    = document.getElementById('statusMsg');
+const historySection = document.getElementById('historySection');
+const historyList  = document.getElementById('historyList');
+const qualityChips = document.getElementById('qualityChips');
+
+/* ── Quality chips ── */
+qualityChips.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    qualityChips.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    state.quality = chip.dataset.q;
+  });
+});
+
+/* ── Clear input ── */
+btnClear.addEventListener('click', () => {
+  urlInput.value = '';
+  setStatus('', 'info');
+  hideProgress();
+  urlInput.focus();
+});
+
+/* ── Enter to download ── */
+urlInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') startDownload();
+});
+
+/* ── Download ── */
+btnDownload.addEventListener('click', startDownload);
+
+async function startDownload() {
+  const url = urlInput.value.trim();
+
+  if (!url) {
+    setStatus('⚠ Link boş olamaz.', 'error');
+    shake(urlInput.closest('.input-group'));
+    return;
+  }
+
+  // Basic URL validation
+  if (!/^https?:\/\/.+/.test(url)) {
+    setStatus('⚠ Geçerli bir video URL\'si girin.', 'error');
+    shake(urlInput.closest('.input-group'));
+    return;
+  }
+
+  if (state.loading) return;
+  state.loading = true;
+
+  setLoading(true);
+  setStatus('Sunucuya bağlanılıyor...', 'info');
+  showProgress();
+  setProgress(0, 'Başlatılıyor...');
+
+  try {
+    /* Step 1: POST /download */
+    const res = await fetch(`${BASE_URL}/download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, quality: state.quality }),
+    });
+
+    if (!res.ok) throw new Error(`Sunucu hatası: ${res.status}`);
+    
+    const downloadData = await res.json();
+    const requestId = downloadData.id;  // Server'dan unique ID al
+
+    /* Step 2: Animate progress 0→85 */
+    await animateProgress(0, 85, 1800, 'İşleniyor...');
+
+    setStatus('İndiriliyor...', 'info');
+
+    /* Step 3: GET /file/{id} */
+    const fileRes = await fetch(`${BASE_URL}/file/${requestId}`);
+    if (!fileRes.ok) throw new Error('Video alınamadı.');
+
+    await animateProgress(85, 100, 600, 'Kaydediliyor...');
+
+    /* Step 4: Trigger browser download */
+    const blob = await fileRes.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = `video_${Date.now()}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objUrl), 10000);
+
+    /* Step 5: DELETE /delete/{id} */
+    fetch(`${BASE_URL}/delete/${requestId}`, { method: 'POST' }).catch(() => {});
+
+    /* Success */
+    addToHistory(url);
+    setStatus('✔ İndirme tamamlandı! Dosya kaydedildi.', 'success');
+
+  } catch (err) {
+    setStatus(`⚠ Hata: ${err.message}`, 'error');
+    setProgress(0, 'Hata oluştu.');
+  }
+
+  state.loading = false;
+  setLoading(false);
+}
+
+/* ── Progress helpers ── */
+function showProgress() { progressWrap.style.display = 'flex'; progressWrap.style.flexDirection = 'column'; progressWrap.style.gap = '.5rem'; }
+function hideProgress() { progressWrap.style.display = 'none'; }
+
+function setProgress(pct, statusText) {
+  progressFill.style.width = pct + '%';
+  progressPct.textContent = '%' + Math.round(pct);
+  if (statusText) progressStatus.textContent = statusText;
+}
+
+function animateProgress(from, to, durationMs, statusText) {
+  return new Promise(resolve => {
+    const steps = 40;
+    const stepTime = durationMs / steps;
+    const stepSize = (to - from) / steps;
+    let current = from;
+    if (statusText) progressStatus.textContent = statusText;
+    const interval = setInterval(() => {
+      current += stepSize;
+      if (current >= to) { current = to; clearInterval(interval); resolve(); }
+      setProgress(current, null);
+    }, stepTime);
+  });
+}
+
+/* ── Status ── */
+function setStatus(msg, type) {
+  statusMsg.textContent = msg;
+  statusMsg.className = `status-msg ${type}`;
+}
+
+/* ── Loading state ── */
+function setLoading(on) {
+  btnDownload.classList.toggle('loading', on);
+  btnDownload.disabled = on;
+}
+
+/* ── History ── */
+function addToHistory(url) {
+  state.history.unshift(url);
+  if (state.history.length > 10) state.history.pop();
+  try { localStorage.setItem('cdx-history', JSON.stringify(state.history)); } catch (_) {}
+  renderHistory();
+}
+
+function renderHistory() {
+  if (!state.history.length) { historySection.style.display = 'none'; return; }
+  historySection.style.display = 'block';
+  historyList.innerHTML = '';
+  state.history.forEach(url => {
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    const dot = document.createElement('span');
+    dot.className = 'history-dot';
+    const text = document.createElement('span');
+    text.className = 'history-url';
+    text.textContent = url;
+    item.appendChild(dot);
+    item.appendChild(text);
+    item.addEventListener('click', () => {
+      urlInput.value = url;
+      urlInput.focus();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+    historyList.appendChild(item);
+  });
+}
+
+btnClearHist.addEventListener('click', () => {
+  state.history = [];
+  try { localStorage.removeItem('cdx-history'); } catch (_) {}
+  renderHistory();
+});
+
+/* ── Shake animation ── */
+function shake(el) {
+  el.style.animation = 'none';
+  el.style.transition = 'none';
+  let start = null;
+  const shakes = [0, -6, 6, -4, 4, -2, 2, 0];
+  function step(ts) {
+    if (!start) start = ts;
+    const progress = ts - start;
+    const idx = Math.min(Math.floor(progress / 50), shakes.length - 1);
+    el.style.transform = `translateX(${shakes[idx]}px)`;
+    if (idx < shakes.length - 1) requestAnimationFrame(step);
+    else el.style.transform = '';
+  }
+  requestAnimationFrame(step);
+}
+
+/* ── Init ── */
+renderHistory();
+</script>
+</body>
+</html>

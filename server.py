@@ -1,108 +1,123 @@
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, render_template, jsonify
+from flask_cors import CORS
 import yt_dlp
 import os
-import sys
-import subprocess
-import base64
 import tempfile
+import uuid
+import time
 
 app = Flask(__name__)
-VIDEO_PATH = "video.mp4"
+CORS(app)  # full açık bırak (debug için en sağlam)
+
+TEMP_DIR = tempfile.gettempdir()
 
 
-def get_cookie_file():
-    b64 = os.environ.get("COOKIES_B64")
-    if not b64:
-        return None
-    try:
-        decoded = base64.b64decode(b64)
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="wb")
-        tmp.write(decoded)
-        tmp.close()
-        return tmp.name
-    except Exception as e:
-        print(f"Cookie decode hatası: {e}")
-        return None
+# ===== HELPERS =====
+def get_video_path(rid):
+    return os.path.join(TEMP_DIR, f"clipdropx_{rid}.mp4")
+
+
+def cleanup():
+    now = time.time()
+    for f in os.listdir(TEMP_DIR):
+        if f.startswith("clipdropx_"):
+            path = os.path.join(TEMP_DIR, f)
+            if now - os.path.getmtime(path) > 3600:
+                try:
+                    os.remove(path)
+                except:
+                    pass
+
+
+def get_format(quality):
+    if quality == "best":
+        return "best[ext=mp4]/best"
+
+    return (
+        f"best[height<={quality}][ext=mp4]/"
+        f"bestvideo[height<={quality}]+bestaudio/"
+        f"best"
+    )
+
+
+# ===== ROUTES =====
+@app.route("/")
+def home():
+    return render_template("index.html")
+
+
+@app.route("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.route("/download", methods=["POST"])
 def download():
-    global VIDEO_PATH
-
-    data = request.json
-    url = data.get("url")
-
-    if not url:
-        return {"error": "URL eksik"}, 400
-
-    if os.path.exists(VIDEO_PATH):
-        os.remove(VIDEO_PATH)
-
-    is_youtube = "youtube.com" in url or "youtu.be" in url
-
-    if is_youtube:
-        # YouTube için cookie YOK, ios client kullan
-        ydl_opts = {
-            'format': 'best[ext=mp4]/best',
-            'merge_output_format': 'mp4',
-            'outtmpl': 'video.%(ext)s',
-            'noplaylist': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios', 'android']
-                }
-            }
-        }
-    else:
-        # Diğer platformlar için cookie kullan
-        cookie_file = get_cookie_file()
-        ydl_opts = {
-            'format': 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]',
-            'merge_output_format': 'mp4',
-            'outtmpl': 'video.%(ext)s',
-            'noplaylist': True,
-        }
-        if cookie_file:
-            ydl_opts['cookiefile'] = cookie_file
+    cleanup()
 
     try:
+        data = request.get_json(force=True)
+        url = data.get("url")
+        quality = data.get("quality", "best")
+
+        if not url:
+            return {"error": "URL yok"}, 400
+
+        rid = str(uuid.uuid4())[:8]
+        temp_base = os.path.join(TEMP_DIR, f"clipdropx_{rid}")
+
+        ydl_opts = {
+            "format": get_format(quality),
+            "outtmpl": temp_base + ".%(ext)s",
+            "merge_output_format": "mp4",
+            "quiet": True,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0"
+            },
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-        return {"status": "ok"}
+
+        # 🔥 EXTENSION FIX (en kritik)
+        final_path = get_video_path(rid)
+        for f in os.listdir(TEMP_DIR):
+            if f.startswith(f"clipdropx_{rid}"):
+                os.rename(os.path.join(TEMP_DIR, f), final_path)
+                break
+
+        if not os.path.exists(final_path):
+            return {"error": "Dosya oluşmadı"}, 500
+
+        return {"status": "ok", "id": rid}
+
     except Exception as e:
-        print(f"İndirme hatası: {e}")
-        return {"error": str(e)}, 500
+        print("HATA:", e)
+        return {"error": "Download failed"}, 500
 
 
-@app.route("/file")
-def file():
-    if not os.path.exists(VIDEO_PATH):
-        return {"error": "Dosya bulunamadı"}, 404
-    return send_file(VIDEO_PATH, as_attachment=True)
+@app.route("/file/<rid>")
+def file(rid):
+    path = get_video_path(rid)
+
+    if not os.path.exists(path):
+        return {"error": "Yok"}, 404
+
+    return send_file(path, as_attachment=True, download_name="video.mp4")
 
 
-@app.route("/delete", methods=["POST"])
-def delete():
-    if os.path.exists(VIDEO_PATH):
-        os.remove(VIDEO_PATH)
-    return {"status": "deleted"}
-
-
-@app.route("/shutdown", methods=["POST"])
-def shutdown():
+@app.route("/delete/<rid>", methods=["POST"])
+def delete(rid):
+    path = get_video_path(rid)
     try:
-        if os.name == "nt":
-            subprocess.run(["shutdown", "/s", "/t", "0"], check=True)
-        elif sys.platform.startswith("linux"):
-            subprocess.run(["shutdown", "-h", "now"], check=True)
-        elif sys.platform.startswith("darwin"):
-            subprocess.run(["sudo", "shutdown", "-h", "now"], check=True)
-        else:
-            return {"error": "Desteklenmeyen platform"}, 500
-        return {"status": "ok"}
-    except Exception as e:
-        return {"error": str(e)}, 500
+        if os.path.exists(path):
+            os.remove(path)
+    except:
+        pass
+    return {"status": "ok"}
 
 
+# ===== RUN =====
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
