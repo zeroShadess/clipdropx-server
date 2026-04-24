@@ -1,326 +1,217 @@
 """
-ClipDropX - Production Ready Video Downloader
-- Chunk-based streaming (no send_file)
-- No re-encoding (fast remux only)
-- Cookie support
-- Auto cleanup
-- Timeout & size limits
-- Gunicorn compatible
+ClipDropX - Production Ready (Quality + Progress + SSE + Flutter)
 """
 
 import os
 import re
 import time
 import uuid
+import json
 import tempfile
-import shutil
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
-from datetime import datetime, timedelta
 
 import yt_dlp
-from flask import Flask, request, jsonify, Response, stream_with_context
+from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory
 from flask_cors import CORS
 
-# ========== KONFIGÜRASYON ==========
 app = Flask(__name__)
 CORS(app, origins="*")
 
-# Ortam değişkenleri
+# ========== Konfigürasyon ==========
 PORT = int(os.environ.get("PORT", 5000))
 MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB", 500))
 CLEANUP_HOURS = int(os.environ.get("CLEANUP_HOURS", 2))
-COOKIES_B64 = os.environ.get("CLIPDROPX_COOKIES_B64", "")  # Base64 encoded cookies
 TEMP_DIR = tempfile.gettempdir()
-CHUNK_SIZE = 1024 * 1024  # 1MB chunks for streaming
+CHUNK_SIZE = 1024 * 1024
 
-# Geçici cookies dosyası (varsa)
-COOKIE_FILE = None
-if COOKIES_B64:
-    import base64
-    try:
-        cookies_data = base64.b64decode(COOKIES_B64).decode('utf-8')
-        COOKIE_FILE = os.path.join(TEMP_DIR, f"cookies_{uuid.uuid4().hex[:8]}.txt")
-        with open(COOKIE_FILE, 'w') as f:
-            f.write(cookies_data)
-        print(f"[INFO] Cookie file created: {COOKIE_FILE}")
-    except Exception as e:
-        print(f"[WARN] Failed to load cookies: {e}")
+# Progress store (download_id -> progress dict)
+progress_store = {}
 
+def quality_to_format(quality: str) -> str:
+    """Kullanıcı kalite seçeneğini yt-dlp format string'ine çevir"""
+    q = quality.lower()
+    if q == "2160" or q == "4k":
+        return "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best"
+    elif q == "1080":
+        return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best"
+    elif q == "720":
+        return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best"
+    elif q == "480":
+        return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best"
+    else:  # best
+        return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 
-# ========== YARDIMCI FONKSİYONLAR ==========
 def is_valid_url(url: str) -> bool:
-    """Desteklenen platformları kontrol et"""
-    allowed_domains = [
-        "tiktok.com", "instagram.com", "twitter.com", "x.com",
-        "reddit.com", "vimeo.com", "youtube.com", "youtu.be"
-    ]
+    allowed = ["tiktok.com", "instagram.com", "twitter.com", "x.com", "reddit.com", "vimeo.com", "youtube.com", "youtu.be"]
     if not url.startswith(("http://", "https://")):
         return False
     try:
         domain = urlparse(url).netloc.lower().replace("www.", "")
-        return any(domain.endswith(d) for d in allowed_domains)
+        return any(domain.endswith(d) for d in allowed)
     except:
         return False
 
-
 def is_valid_id(rid: str) -> bool:
-    """ID format kontrolü (8 hex karakter)"""
     return bool(re.match(r"^[a-f0-9]{8}$", rid))
 
-
 def get_file_path(file_id: str) -> Path:
-    """Geçici dosya yolunu döndür"""
     return Path(TEMP_DIR) / f"clipdropx_{file_id}.mp4"
 
-
 def cleanup_old_files():
-    """Eski dosyaları temizle (thread-safe)"""
     try:
         now = time.time()
-        max_age = CLEANUP_HOURS * 3600
-        for file_path in Path(TEMP_DIR).glob("clipdropx_*.mp4"):
-            if now - file_path.stat().st_mtime > max_age:
-                file_path.unlink()
-                print(f"[CLEANUP] Deleted {file_path.name}")
-    except Exception as e:
-        print(f"[CLEANUP ERROR] {e}")
+        for f in Path(TEMP_DIR).glob("clipdropx_*.mp4"):
+            if now - f.stat().st_mtime > CLEANUP_HOURS * 3600:
+                f.unlink()
+    except:
+        pass
 
+def progress_hook(download_id: str):
+    def hook(d):
+        if d['status'] == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 1
+            downloaded = d.get('downloaded_bytes', 0)
+            percent = (downloaded / total) * 100 if total > 0 else 0
+            progress_store[download_id] = {
+                'percent': round(percent, 1),
+                'speed': d.get('speed', 0),
+                'eta': d.get('eta', 0),
+                'status': 'downloading'
+            }
+        elif d['status'] == 'finished':
+            progress_store[download_id] = {'percent': 100, 'status': 'finished'}
+        elif d['status'] == 'error':
+            progress_store[download_id] = {'status': 'error', 'error': str(d.get('error', ''))}
+    return hook
 
-def get_ytdlp_opts(output_path: str) -> dict:
-    """
-    Optimize edilmiş yt-dlp parametreleri
-    - No re-encoding (sadece remux)
-    - Hızlı fragment download
-    - Zaman aşımı koruması
-    """
-    opts = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "outtmpl": output_path,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": False,
-        "concurrent_fragment_downloads": 4,          # Hızlı indirme
-        "retries": 5,                               # Ağ hatası durumunda tekrar
-        "fragment_retries": 5,
-        "socket_timeout": 30,                       # 30 saniye timeout
-        "file_access_retries": 3,
-        "postprocessors": [{
-            "key": "FFmpegVideoRemuxer",            # Sadece container değiştirir, re-encode YOK!
-            "preferedformat": "mp4",
-        }],
-    }
-
-    # Cookie desteği
-    if COOKIE_FILE and os.path.exists(COOKIE_FILE):
-        opts["cookiefile"] = COOKIE_FILE
-
-    return opts
-
-
-def download_video(url: str, file_id: str) -> tuple[bool, str, int]:
-    """
-    Videoyu indir ve geçici dosyaya kaydet.
-    Return: (başarılı_mı?, hata_mesajı, dosya_boyutu_bytes)
-    """
+def download_video_thread(url: str, file_id: str, quality: str):
     output_path = str(get_file_path(file_id))
-    ydl_opts = get_ytdlp_opts(output_path)
-
+    format_str = quality_to_format(quality)
+    ydl_opts = {
+        'format': format_str,
+        'outtmpl': output_path,
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'concurrent_fragment_downloads': 4,
+        'retries': 5,
+        'fragment_retries': 5,
+        'socket_timeout': 30,
+        'progress_hooks': [progress_hook(file_id)],
+        'postprocessors': [{
+            'key': 'FFmpegVideoRemuxer',
+            'preferedformat': 'mp4',
+        }]
+    }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Önce video bilgilerini al (boyut kontrolü için)
-            info = ydl.extract_info(url, download=False)
-            
-            # Dosya boyutunu tahmin et (eğer varsa)
-            estimated_size = 0
-            if "filesize" in info and info["filesize"]:
-                estimated_size = info["filesize"]
-            elif "filesize_approx" in info:
-                estimated_size = info["filesize_approx"]
-            
-            # Maksimum boyut kontrolü
-            max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
-            if estimated_size > max_bytes:
-                return False, f"Video exceeds {MAX_FILE_SIZE_MB}MB limit", 0
-            
-            # İndir
             ydl.download([url])
-            
-            # Dosyanın gerçek boyutunu kontrol et
-            actual_size = os.path.getsize(output_path)
-            if actual_size == 0:
-                return False, "Downloaded file is empty", 0
-            if actual_size > max_bytes:
-                os.remove(output_path)
-                return False, f"Downloaded file exceeds {MAX_FILE_SIZE_MB}MB limit", 0
-            
-            return True, "", actual_size
-            
-    except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e)
-        if "Private video" in error_msg:
-            return False, "Video is private", 0
-        if "Video unavailable" in error_msg:
-            return False, "Video not found", 0
-        return False, f"Download error: {error_msg[:100]}", 0
+        size = os.path.getsize(output_path)
+        max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+        if size > max_bytes:
+            os.remove(output_path)
+            progress_store[file_id] = {'status': 'error', 'error': f'File exceeds {MAX_FILE_SIZE_MB}MB'}
+        else:
+            progress_store[file_id]['file_size'] = size
+            progress_store[file_id]['status'] = 'complete'
     except Exception as e:
-        return False, f"Unexpected error: {str(e)[:100]}", 0
+        progress_store[file_id] = {'status': 'error', 'error': str(e)}
+        if os.path.exists(output_path):
+            os.remove(output_path)
 
-
-# ========== STREAMING GENERATOR ==========
-def generate_video_stream(file_path: Path, chunk_size: int = CHUNK_SIZE):
-    """
-    Dosyayı chunk chunk okuyan generator.
-    send_file yerine kullanılır.
-    """
-    try:
-        with open(file_path, "rb") as f:
-            while True:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                yield chunk
-    except Exception as e:
-        print(f"[STREAM ERROR] {e}")
-        yield b""
-
-
-# ========== FLASK ENDPOINTS ==========
+# ========== Endpointler ==========
 @app.route("/")
 def home():
-    """Ana sayfa - basit bir mesaj"""
-    return jsonify({
-        "service": "ClipDropX Downloader",
-        "status": "running",
-        "version": "3.0",
-        "endpoints": ["/download", "/file/<id>", "/delete/<id>", "/health"]
-    })
+    # Eğer web arayüzü göstermek isterseniz index.html'i serve edin
+    # Önce index.html dosyasının var olduğunu varsayalım
+    try:
+        return send_from_directory('.', 'index.html')
+    except:
+        return jsonify({"service": "ClipDropX API", "status": "running", "endpoints": ["/download", "/progress/<id>", "/file/<id>", "/delete/<id>"]})
 
-
-@app.route("/health", methods=["GET"])
+@app.route("/health")
 def health():
-    """Sağlık kontrolü"""
-    cleanup_old_files()  # Periyodik temizlik
-    return jsonify({"status": "healthy", "timestamp": time.time()})
-
+    cleanup_old_files()
+    return jsonify({"status": "healthy"})
 
 @app.route("/download", methods=["POST"])
 def download():
-    """
-    Video indirme isteği
-    Request: {"url": "https://..."}
-    Response: {"id": "abcd1234"}
-    """
-    cleanup_old_files()  # Her istekte temizlik kontrolü
+    cleanup_old_files()
+    data = request.get_json()
+    if not data or "url" not in data:
+        return jsonify({"error": "Missing url"}), 400
+    url = data["url"].strip()
+    if not is_valid_url(url):
+        return jsonify({"error": "Unsupported URL"}), 400
+
+    quality = data.get("quality", "1080")
+    file_id = uuid.uuid4().hex[:8]
+    progress_store[file_id] = {'percent': 0, 'status': 'starting'}
     
-    try:
-        data = request.get_json()
-        if not data or "url" not in data:
-            return jsonify({"error": "Missing 'url' field"}), 400
-        
-        url = data["url"].strip()
-        if not is_valid_url(url):
-            return jsonify({"error": "Unsupported URL"}), 400
-        
-        # Benzersiz ID oluştur
-        file_id = uuid.uuid4().hex[:8]
-        
-        # Videoyu indir
-        success, error_msg, file_size = download_video(url, file_id)
-        
-        if not success:
-            return jsonify({"error": error_msg}), 400
-        
-        return jsonify({
-            "id": file_id,
-            "size_bytes": file_size,
-            "size_mb": round(file_size / (1024 * 1024), 2)
-        })
-        
-    except Exception as e:
-        print(f"[DOWNLOAD ERROR] {e}")
-        return jsonify({"error": "Internal server error"}), 500
+    thread = threading.Thread(target=download_video_thread, args=(url, file_id, quality))
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({"id": file_id})
 
-
-@app.route("/file/<file_id>", methods=["GET"])
-def stream_video(file_id):
-    """
-    Videoyu chunked streaming ile döndür.
-    send_file KULLANILMAZ -> generator + stream_with_context
-    """
+@app.route("/progress/<file_id>")
+def progress_stream(file_id):
     if not is_valid_id(file_id):
-        return jsonify({"error": "Invalid ID format"}), 400
-    
-    file_path = get_file_path(file_id)
-    
-    if not file_path.exists():
-        return jsonify({"error": "File not found or expired"}), 404
-    
-    # Dosya boyutunu al (Content-Length için)
-    try:
-        file_size = file_path.stat().st_size
-    except:
-        file_size = None
-    
-    # Streaming generator ile yanıt
+        return jsonify({"error": "Invalid ID"}), 400
     def generate():
-        yield from generate_video_stream(file_path)
-    
-    response = Response(
-        stream_with_context(generate()),
-        mimetype="video/mp4",
-        headers={
-            "Content-Disposition": "attachment; filename=video.mp4",
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "no-cache",
-            **({"Content-Length": str(file_size)} if file_size else {})
-        }
-    )
-    return response
+        last_percent = -1
+        while True:
+            prog = progress_store.get(file_id, {})
+            status = prog.get('status', 'starting')
+            percent = prog.get('percent', 0)
+            if status == 'complete':
+                yield f"data: {json.dumps({'percent': 100, 'status': 'complete', 'file_id': file_id})}\n\n"
+                break
+            elif status == 'error':
+                yield f"data: {json.dumps({'status': 'error', 'error': prog.get('error', 'Unknown error')})}\n\n"
+                break
+            elif percent != last_percent:
+                last_percent = percent
+                yield f"data: {json.dumps({'percent': percent, 'status': 'downloading'})}\n\n"
+            time.sleep(0.5)
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
+@app.route("/file/<file_id>")
+def stream_video(file_id):
+    if not is_valid_id(file_id):
+        return jsonify({"error": "Invalid ID"}), 400
+    fp = get_file_path(file_id)
+    if not fp.exists():
+        return jsonify({"error": "File not found"}), 404
+    
+    # İndirme tamamlanmamışsa bekle (max 30 sn)
+    for _ in range(60):
+        prog = progress_store.get(file_id, {})
+        if prog.get('status') == 'complete':
+            break
+        if prog.get('status') == 'error':
+            return jsonify({"error": "Download failed"}), 500
+        time.sleep(0.5)
+    
+    def generate():
+        with open(fp, "rb") as f:
+            while chunk := f.read(CHUNK_SIZE):
+                yield chunk
+    return Response(generate(), mimetype="video/mp4", headers={"Content-Disposition": "attachment; filename=video.mp4"})
 
 @app.route("/delete/<file_id>", methods=["POST", "DELETE"])
 def delete_video(file_id):
-    """
-    Geçici dosyayı sil (isteğe bağlı)
-    """
-    if not is_valid_id(file_id):
-        return jsonify({"error": "Invalid ID format"}), 400
-    
-    file_path = get_file_path(file_id)
-    
+    fp = get_file_path(file_id)
     try:
-        if file_path.exists():
-            file_path.unlink()
-            return jsonify({"success": True, "message": "File deleted"})
-        else:
-            return jsonify({"success": False, "message": "File not found"}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        if fp.exists():
+            fp.unlink()
+        if file_id in progress_store:
+            del progress_store[file_id]
+        return jsonify({"success": True})
+    except:
+        return jsonify({"error": "Delete failed"}), 500
 
-
-# ========== CLEANUP SCHEDULER (background thread) ==========
-import threading
-import atexit
-
-def cleanup_scheduler():
-    """Arka planda periyodik temizlik yapan thread"""
-    while True:
-        time.sleep(3600)  # Her saat başı
-        cleanup_old_files()
-
-# Scheduler'ı başlat (sadece main'de değil, gunicorn için de çalışsın)
-_cleanup_thread = threading.Thread(target=cleanup_scheduler, daemon=True)
-_cleanup_thread.start()
-
-atexit.register(lambda: print("[INFO] Shutting down..."))
-
-
-# ========== ENTRY POINT ==========
 if __name__ == "__main__":
-    print(f"[INFO] Starting ClipDropX on port {PORT}")
-    print(f"[INFO] Temp dir: {TEMP_DIR}")
-    print(f"[INFO] Max file size: {MAX_FILE_SIZE_MB}MB")
-    print(f"[INFO] Cookies loaded: {bool(COOKIE_FILE)}")
     app.run(host="0.0.0.0", port=PORT, threaded=True)

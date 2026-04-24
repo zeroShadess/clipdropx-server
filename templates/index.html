@@ -937,71 +937,53 @@ btnDownload.addEventListener('click', startDownload);
 
 async function startDownload() {
   const url = urlInput.value.trim();
-
-  if (!url) {
-    setStatus('⚠ Link boş olamaz.', 'error');
-    shake(urlInput.closest('.input-group'));
-    return;
-  }
-
-  // Basic URL validation
-  if (!/^https?:\/\/.+/.test(url)) {
-    setStatus('⚠ Geçerli bir video URL\'si girin.', 'error');
-    shake(urlInput.closest('.input-group'));
-    return;
-  }
-
-  if (state.loading) return;
-  state.loading = true;
+  if (!url) return;
 
   setLoading(true);
-  setStatus('Sunucuya bağlanılıyor...', 'info');
+  setStatus('Başlatılıyor...', 'info');
   showProgress();
-  setProgress(0, 'Başlatılıyor...');
+  setProgress(0, 'Bağlanıyor...');
 
   try {
-    /* Step 1: POST /download */
     const res = await fetch(`${BASE_URL}/download`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, quality: state.quality }),
     });
+    const { id } = await res.json();
+    if (!id) throw new Error('No id');
 
-    if (!res.ok) throw new Error(`Sunucu hatası: ${res.status}`);
-    
-    const downloadData = await res.json();
-    const requestId = downloadData.id;  // Server'dan unique ID al
-
-    /* Step 2: Animate progress 0→85 */
-    await animateProgress(0, 85, 1800, 'İşleniyor...');
-
-    setStatus('İndiriliyor...', 'info');
-
-    /* Step 3: GET /file/{id} */
-const downloadUrl = `${BASE_URL}/file/${requestId}`;
-
-/* Step 4: Trigger download */
-const a = document.createElement('a');
-a.href = downloadUrl;
-a.download = 'video.mp4';
-document.body.appendChild(a);
-a.click();
-a.remove();
-
-/* Step 5: DELETE (async) */
-fetch(`${BASE_URL}/delete/${requestId}`, { method: 'POST' }).catch(() => {});
-
-    /* Success */
-    addToHistory(url);
-    setStatus('✔ İndirme tamamlandı! Dosya kaydedildi.', 'success');
-
+    // SSE ile progress takibi
+    const evtSource = new EventSource(`${BASE_URL}/progress/${id}`);
+    evtSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.status === 'complete') {
+        setProgress(100, 'İndirme tamam!');
+        // Dosyayı indir
+        const a = document.createElement('a');
+        a.href = `${BASE_URL}/file/${id}`;
+        a.download = 'video.mp4';
+        a.click();
+        a.remove();
+        evtSource.close();
+        setStatus('✔ Tamamlandı!', 'success');
+        setLoading(false);
+        hideProgress();
+        addToHistory(url);
+      } else if (data.status === 'error') {
+        setStatus(`Hata: ${data.error}`, 'error');
+        evtSource.close();
+        setLoading(false);
+        hideProgress();
+      } else {
+        setProgress(data.percent, `İndiriliyor... %${data.percent}`);
+      }
+    };
   } catch (err) {
-    setStatus(`⚠ Hata: ${err.message}`, 'error');
-    setProgress(0, 'Hata oluştu.');
+    setStatus(`Hata: ${err.message}`, 'error');
+    setLoading(false);
+    hideProgress();
   }
-
-  state.loading = false;
-  setLoading(false);
 }
 
 /* ── Progress helpers ── */
