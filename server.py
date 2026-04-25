@@ -1,5 +1,5 @@
 """
-ClipDropX - Production Server (Tam & Düzeltilmiş)
+ClipDropX - Production Server (Platform-Aware Quality Fix)
 """
 
 import os
@@ -44,6 +44,10 @@ ALLOWED_DOMAINS = [
     "twitch.tv",
 ]
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def is_valid_url(url: str) -> bool:
     if not url.startswith(("http://", "https://")):
         return False
@@ -55,6 +59,102 @@ def is_valid_url(url: str) -> bool:
 
 def is_valid_id(rid: str) -> bool:
     return bool(re.match(r"^[a-f0-9]{8}$", rid))
+
+def detect_platform(url: str) -> str:
+    try:
+        netloc = urlparse(url).netloc.lower().replace("www.", "")
+    except Exception:
+        return "generic"
+    if "tiktok.com" in netloc or "vm.tiktok.com" in netloc or "vt.tiktok.com" in netloc:
+        return "tiktok"
+    if "instagram.com" in netloc:
+        return "instagram"
+    if "youtube.com" in netloc or "youtu.be" in netloc:
+        return "youtube"
+    if "twitter.com" in netloc or "x.com" in netloc:
+        return "twitter"
+    if "reddit.com" in netloc:
+        return "reddit"
+    if "vimeo.com" in netloc:
+        return "vimeo"
+    return "generic"
+
+def get_height(quality: str) -> int:
+    q = quality.lower().strip()
+    mapping = {"4k": 2160, "2160": 2160, "1080": 1080, "720": 720, "480": 480, "360": 360}
+    return mapping.get(q, 1080)
+
+def build_format_opts(platform: str, quality: str) -> dict:
+    """
+    Returns a dict with 'format' and optionally 'format_sort' keys.
+
+    Strategy per platform:
+    - YouTube  : standard bestvideo+bestaudio with height cap, format_sort for quality ladder
+    - TikTok   : height-filtered sort, broad fallback (TikTok doesn't support advanced selectors well)
+    - Instagram : similar to TikTok — sort by height, fallback to best
+    - Twitter/X : sort approach, fallback to best
+    - generic   : sort approach with broad fallback
+    """
+    q = quality.lower().strip()
+    h = get_height(quality)
+
+    if q == "best":
+        if platform == "youtube":
+            return {
+                "format": "bestvideo+bestaudio/best",
+                "format_sort": ["res", "br", "fps"],
+            }
+        else:
+            # For non-YouTube, "best" = just let yt-dlp pick the best available
+            return {
+                "format": "best",
+                "format_sort": ["res", "br", "fps"],
+            }
+
+    if platform == "youtube":
+        # YouTube supports advanced selectors perfectly
+        fmt = (
+            f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/"
+            f"bestvideo[height<={h}]+bestaudio/"
+            f"best[height<={h}]/"
+            f"best"
+        )
+        return {
+            "format": fmt,
+            "format_sort": [f"res:{h}", "br", "fps"],
+        }
+
+    if platform == "tiktok":
+        # TikTok: format selectors with height work unreliably.
+        # Use format_sort to prefer the requested resolution,
+        # then fall back broadly so it never errors out.
+        return {
+            "format": "best",           # broad selector — yt-dlp will sort below
+            "format_sort": [f"res:{h}", "br", "fps"],
+        }
+
+    if platform == "instagram":
+        # Instagram DASH streams work with height selector but need a fallback
+        fmt = (
+            f"bestvideo[height<={h}]+bestaudio/"
+            f"best[height<={h}]/"
+            f"best"
+        )
+        return {
+            "format": fmt,
+            "format_sort": [f"res:{h}", "br", "fps"],
+        }
+
+    # twitter, reddit, vimeo, generic — safe middle ground
+    fmt = (
+        f"bestvideo[height<={h}]+bestaudio/"
+        f"best[height<={h}]/"
+        f"best"
+    )
+    return {
+        "format": fmt,
+        "format_sort": [f"res:{h}", "br", "fps"],
+    }
 
 def find_output_file(file_id: str):
     pattern = os.path.join(TEMP_DIR, f"clipdropx_{file_id}.*")
@@ -78,25 +178,6 @@ def cleanup_old_files():
     except Exception:
         pass
 
-def quality_to_format(quality: str) -> str:
-    q = quality.lower().strip()
-    height_map = {"2160": 2160, "4k": 2160, "1080": 1080, "720": 720, "480": 480}
-    if q == "best":
-        return "bestvideo+bestaudio/best"
-    h = height_map.get(q, 1080)
-    return (
-        f"bestvideo[height<={h}]+bestaudio/"
-        f"best[height<={h}]"
-    )
-
-def get_format_sort(quality: str) -> list:
-    q = quality.lower().strip()
-    if q == "best":
-        return ["res", "br", "fps"]
-    height_map = {"2160": 2160, "4k": 2160, "1080": 1080, "720": 720, "480": 480}
-    h = height_map.get(q, 1080)
-    return [f"res:{h}", "br", "fps"]
-
 def make_progress_hook(file_id: str):
     def hook(d: dict):
         if d["status"] == "downloading":
@@ -118,12 +199,20 @@ def make_progress_hook(file_id: str):
                 })
     return hook
 
+# ---------------------------------------------------------------------------
+# Download thread
+# ---------------------------------------------------------------------------
+
 def download_thread(url: str, file_id: str, quality: str):
-    outtmpl = os.path.join(TEMP_DIR, f"clipdropx_{file_id}.%(ext)s")
+    outtmpl  = os.path.join(TEMP_DIR, f"clipdropx_{file_id}.%(ext)s")
+    platform = detect_platform(url)
+    fmt_opts = build_format_opts(platform, quality)
+
+    print(f"[INFO] {file_id} | platform={platform} | quality={quality} | format={fmt_opts['format']}")
 
     ydl_opts = {
-        "format":        quality_to_format(quality),
-        "format_sort":   get_format_sort(quality),
+        "format":        fmt_opts["format"],
+        "format_sort":   fmt_opts.get("format_sort", ["res", "br", "fps"]),
         "outtmpl":       outtmpl,
         "noplaylist":    True,
         "quiet":         False,
@@ -180,6 +269,9 @@ def download_thread(url: str, file_id: str, quality: str):
             progress_store[file_id] = {"status": "error", "error": str(e)}
         print(f"[ERROR] {file_id}: {e}")
 
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.route("/")
 def home():
