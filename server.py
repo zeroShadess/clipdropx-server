@@ -1,10 +1,17 @@
 """
-ClipDropX - Final Production (No re-encode, H.264 priority, auto-delete)
+ClipDropX - Fixed Production Server
+Düzeltmeler:
+  1. yt-dlp çıktı dosyasını ext bağımsız bulur (FileNotFoundError fix)
+  2. Format string sadeleştirildi, kalite seçimi güvenilir
+  3. İndirme tamamlanmadan /file isteğine cevap verilmiyor
+  4. Progress store'da gerçek dosya yolu saklanıyor
+  5. Temizlik race condition'ı giderildi
 """
 
 import os
 import re
 import time
+import glob
 import uuid
 import json
 import tempfile
@@ -19,220 +26,411 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app, origins="*")
 
-PORT = int(os.environ.get("PORT", 5000))
-MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB", 500))
+PORT          = int(os.environ.get("PORT", 5000))
+MAX_FILE_SIZE = int(os.environ.get("MAX_FILE_SIZE_MB", 500)) * 1024 * 1024
 CLEANUP_HOURS = int(os.environ.get("CLEANUP_HOURS", 2))
-TEMP_DIR = tempfile.gettempdir()
-CHUNK_SIZE = 1024 * 1024
+TEMP_DIR      = tempfile.gettempdir()
+CHUNK_SIZE    = 512 * 1024   # 512 KB chunk - daha stabil streaming
 
-progress_store = {}
+progress_store: dict = {}
+store_lock = threading.Lock()
 
-def quality_to_format(quality: str) -> str:
-    q = quality.lower()
-    # Base video filter
-    if q == "2160" or q == "4k":
-        vf = "bestvideo[height<=2160][ext=mp4]"
-    elif q == "1080":
-        vf = "bestvideo[height<=1080][ext=mp4]"
-    elif q == "720":
-        vf = "bestvideo[height<=720][ext=mp4]"
-    elif q == "480":
-        vf = "bestvideo[height<=480][ext=mp4]"
-    else:
-        vf = "bestvideo[ext=mp4]"
-    
-    # Önce H.264 (avc1) dene, sonra herhangi bir codec
-    return f"{vf}[vcodec^=avc1]+bestaudio[ext=m4a]/{vf}+bestaudio[ext=m4a]/{vf}/best"
+# ─────────────────────────────────────────────
+# YARDIMCI FONKSİYONLAR
+# ─────────────────────────────────────────────
+
+ALLOWED_DOMAINS = [
+    "youtube.com", "youtu.be",
+    "tiktok.com",
+    "instagram.com",
+    "twitter.com", "x.com",
+    "reddit.com",
+    "vimeo.com",
+    "dailymotion.com",
+    "facebook.com",
+    "twitch.tv",
+]
 
 def is_valid_url(url: str) -> bool:
-    allowed = ["tiktok.com", "instagram.com", "twitter.com", "x.com", "reddit.com", "vimeo.com", "youtube.com", "youtu.be"]
     if not url.startswith(("http://", "https://")):
         return False
     try:
-        domain = urlparse(url).netloc.lower().replace("www.", "")
-        return any(domain.endswith(d) for d in allowed)
-    except:
+        netloc = urlparse(url).netloc.lower().replace("www.", "")
+        return any(netloc == d or netloc.endswith("." + d) for d in ALLOWED_DOMAINS)
+    except Exception:
         return False
 
 def is_valid_id(rid: str) -> bool:
     return bool(re.match(r"^[a-f0-9]{8}$", rid))
 
-def get_file_path(file_id: str) -> Path:
-    return Path(TEMP_DIR) / f"clipdropx_{file_id}.mp4"
+def find_output_file(file_id: str) -> Path | None:
+    """
+    yt-dlp bazen .mp4 dışında uzantı kullanır.
+    Prefix ile eşleşen ilk dosyayı döndürür.
+    .part dosyalarını atla (henüz tamamlanmamış).
+    """
+    pattern = os.path.join(TEMP_DIR, f"clipdropx_{file_id}.*")
+    matches = [
+        Path(f) for f in glob.glob(pattern)
+        if not f.endswith(".part") and not f.endswith(".ytdl")
+    ]
+    if not matches:
+        return None
+    # En büyük dosyayı tercih et (birleştirilmiş çıktı)
+    return max(matches, key=lambda p: p.stat().st_size)
 
 def cleanup_old_files():
+    """2 saatten eski ClipDropX geçici dosyalarını sil."""
     try:
         now = time.time()
-        for f in Path(TEMP_DIR).glob("clipdropx_*.mp4"):
-            if now - f.stat().st_mtime > CLEANUP_HOURS * 3600:
-                f.unlink()
-    except:
+        for f in Path(TEMP_DIR).glob("clipdropx_*"):
+            try:
+                if now - f.stat().st_mtime > CLEANUP_HOURS * 3600:
+                    f.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception:
         pass
 
-def progress_hook(download_id: str):
-    def hook(d):
-        if d['status'] == 'downloading':
-            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 1
-            downloaded = d.get('downloaded_bytes', 0)
-            percent = (downloaded / total) * 100 if total > 0 else 0
-            progress_store[download_id] = {
-                'percent': round(percent, 1),
-                'speed': d.get('speed', 0),
-                'eta': d.get('eta', 0),
-                'status': 'downloading'
-            }
-        elif d['status'] == 'finished':
-            progress_store[download_id] = {'percent': 100, 'status': 'finished'}
-        elif d['status'] == 'error':
-            progress_store[download_id] = {'status': 'error', 'error': str(d.get('error', ''))}
+def quality_to_format(quality: str) -> str:
+    """
+    Güvenilir format seçimi.
+    Önce mp4+m4a (ffmpeg merge gerektirmez veya hızlı merge),
+    fallback olarak any video+audio, son olarak best.
+    """
+    q = quality.lower().strip()
+
+    height_map = {
+        "2160": 2160, "4k": 2160,
+        "1080": 1080,
+        "720":  720,
+        "480":  480,
+        "360":  360,
+    }
+
+    if q == "best":
+        # Mevcut en iyi kalite
+        return (
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo+bestaudio/"
+            "best"
+        )
+
+    h = height_map.get(q, 1080)
+
+    return (
+        # 1. Tercih: mp4 video + m4a ses (hızlı merge / no-remux)
+        f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/"
+        # 2. Tercih: Herhangi video + m4a ses
+        f"bestvideo[height<={h}]+bestaudio[ext=m4a]/"
+        # 3. Tercih: Herhangi video + herhangi ses
+        f"bestvideo[height<={h}]+bestaudio/"
+        # 4. Fallback: tek dosya o yükseklikte
+        f"best[height<={h}]/"
+        # 5. Son çare: en iyi mevcut
+        "best"
+    )
+
+# ─────────────────────────────────────────────
+# PROGRESS HOOK
+# ─────────────────────────────────────────────
+
+def make_progress_hook(file_id: str):
+    def hook(d: dict):
+        if d["status"] == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 1
+            downloaded = d.get("downloaded_bytes", 0)
+            pct = min(round((downloaded / total) * 100, 1), 99)  # 100'ü thread verir
+            with store_lock:
+                progress_store[file_id].update({
+                    "percent": pct,
+                    "speed":   d.get("speed") or 0,
+                    "eta":     d.get("eta") or 0,
+                    "status":  "downloading",
+                })
+        elif d["status"] == "finished":
+            # yt-dlp download bitti ama postprocess (merge) henüz olabilir
+            with store_lock:
+                progress_store[file_id].update({
+                    "percent": 99,
+                    "status":  "processing",
+                })
     return hook
 
-def download_video_thread(url: str, file_id: str, quality: str):
-    output_path = str(get_file_path(file_id))
-    format_str = quality_to_format(quality)
+# ─────────────────────────────────────────────
+# İNDİRME THREAD'İ
+# ─────────────────────────────────────────────
+
+def download_thread(url: str, file_id: str, quality: str):
+    # %(ext)s kullan — yt-dlp gerçek uzantıyı yazar
+    outtmpl = os.path.join(TEMP_DIR, f"clipdropx_{file_id}.%(ext)s")
+
     ydl_opts = {
-        'format': format_str,
-        'outtmpl': output_path,
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'concurrent_fragment_downloads': 4,
-        'retries': 5,
-        'fragment_retries': 5,
-        'socket_timeout': 30,
-        'progress_hooks': [progress_hook(file_id)],
-        'postprocessors': [{
-            'key': 'FFmpegVideoRemuxer',
-            'preferedformat': 'mp4',
+        "format":      quality_to_format(quality),
+        "outtmpl":     outtmpl,
+        "noplaylist":  True,
+        "quiet":       False,           # Render loglarında görmek için
+        "no_warnings": False,
+        "retries":     5,
+        "fragment_retries": 5,
+        "socket_timeout":   30,
+        "concurrent_fragment_downloads": 4,
+        "progress_hooks": [make_progress_hook(file_id)],
+        # Merge çıktısını mp4'e zorla (mkv/webm karışıklığını önler)
+        "merge_output_format": "mp4",
+        "postprocessors": [{
+            "key": "FFmpegVideoRemuxer",
+            "preferedformat": "mp4",
         }],
     }
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-        size = os.path.getsize(output_path)
-        max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
-        if size > max_bytes:
-            os.remove(output_path)
-            progress_store[file_id] = {'status': 'error', 'error': f'File exceeds {MAX_FILE_SIZE_MB}MB'}
-        else:
-            progress_store[file_id]['file_size'] = size
-            progress_store[file_id]['status'] = 'complete'
+
+        # ── Dosyayı bul ──────────────────────────────────────
+        # Merge sonrası gerçek dosya adını tespit et
+        output_file = find_output_file(file_id)
+
+        if output_file is None:
+            raise FileNotFoundError(
+                f"Download tamamlandı ama dosya bulunamadı: "
+                f"clipdropx_{file_id}.*"
+            )
+
+        file_size = output_file.stat().st_size
+
+        if file_size > MAX_FILE_SIZE:
+            output_file.unlink(missing_ok=True)
+            raise ValueError(
+                f"Dosya boyutu limitin üzerinde: "
+                f"{file_size // (1024*1024)}MB > {MAX_FILE_SIZE // (1024*1024)}MB"
+            )
+
+        with store_lock:
+            progress_store[file_id].update({
+                "percent":   100,
+                "status":    "complete",
+                "file_path": str(output_file),   # ← GERÇEk DOSYA YOLU
+                "file_size": file_size,
+            })
+
     except Exception as e:
-        progress_store[file_id] = {'status': 'error', 'error': str(e)}
-        if os.path.exists(output_path):
-            os.remove(output_path)
+        # Kalan dosyaları temizle
+        for leftover in glob.glob(os.path.join(TEMP_DIR, f"clipdropx_{file_id}.*")):
+            try:
+                Path(leftover).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        with store_lock:
+            progress_store[file_id] = {
+                "status": "error",
+                "error":  str(e),
+            }
+        print(f"[ERROR] {file_id}: {e}")
+
+# ─────────────────────────────────────────────
+# ROUTES
+# ─────────────────────────────────────────────
 
 @app.route("/")
 def home():
     try:
-        return send_from_directory('.', 'index.html')
-    except:
+        return send_from_directory(".", "index.html")
+    except Exception:
         return jsonify({"service": "ClipDropX API", "status": "running"})
 
 @app.route("/health")
 def health():
     cleanup_old_files()
-    return jsonify({"status": "healthy"})
+    return jsonify({"status": "healthy", "temp_dir": TEMP_DIR})
+
 
 @app.route("/download", methods=["POST"])
-def download():
+def start_download():
     cleanup_old_files()
-    data = request.get_json()
-    if not data or "url" not in data:
-        return jsonify({"error": "Missing url"}), 400
-    url = data["url"].strip()
-    if not is_valid_url(url):
-        return jsonify({"error": "Unsupported URL"}), 400
 
-    quality = data.get("quality", "1080")
+    data = request.get_json(silent=True)
+    if not data or "url" not in data:
+        return jsonify({"error": "url alanı gerekli"}), 400
+
+    url = str(data["url"]).strip()
+    if not url:
+        return jsonify({"error": "url boş olamaz"}), 400
+    if not is_valid_url(url):
+        return jsonify({"error": "Desteklenmeyen URL"}), 400
+
+    quality = str(data.get("quality", "1080")).strip()
     file_id = uuid.uuid4().hex[:8]
-    progress_store[file_id] = {'percent': 0, 'status': 'starting'}
-    
-    thread = threading.Thread(target=download_video_thread, args=(url, file_id, quality))
-    thread.daemon = True
-    thread.start()
-    
+
+    with store_lock:
+        progress_store[file_id] = {"percent": 0, "status": "starting"}
+
+    t = threading.Thread(target=download_thread, args=(url, file_id, quality), daemon=True)
+    t.start()
+
     return jsonify({"id": file_id})
+
 
 @app.route("/progress/<file_id>")
 def progress_stream(file_id):
+    """Server-Sent Events ile gerçek zamanlı ilerleme."""
     if not is_valid_id(file_id):
-        return jsonify({"error": "Invalid ID"}), 400
+        return jsonify({"error": "Geçersiz ID"}), 400
+
     def generate():
-        last_percent = -1
-        while True:
-            prog = progress_store.get(file_id, {})
-            status = prog.get('status', 'starting')
-            percent = prog.get('percent', 0)
-            if status == 'complete':
-                yield f"data: {json.dumps({'percent': 100, 'status': 'complete', 'file_id': file_id})}\n\n"
+        last = None
+        timeout_at = time.time() + 600   # max 10 dakika bekle
+
+        while time.time() < timeout_at:
+            with store_lock:
+                prog = dict(progress_store.get(file_id, {"status": "starting", "percent": 0}))
+
+            status = prog.get("status", "starting")
+            payload = {
+                "percent": prog.get("percent", 0),
+                "status":  status,
+                "speed":   prog.get("speed", 0),
+                "eta":     prog.get("eta", 0),
+            }
+
+            if status == "complete":
+                payload["percent"] = 100
+                yield f"data: {json.dumps(payload)}\n\n"
                 break
-            elif status == 'error':
-                yield f"data: {json.dumps({'status': 'error', 'error': prog.get('error', 'Unknown error')})}\n\n"
+            elif status == "error":
+                payload["error"] = prog.get("error", "Bilinmeyen hata")
+                yield f"data: {json.dumps(payload)}\n\n"
                 break
-            elif percent != last_percent:
-                last_percent = percent
-                yield f"data: {json.dumps({'percent': percent, 'status': 'downloading'})}\n\n"
-            time.sleep(0.5)
-    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+            else:
+                if payload != last:
+                    yield f"data: {json.dumps(payload)}\n\n"
+                    last = payload
+                time.sleep(0.5)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # Nginx / Render proxy buffer devre dışı
+        }
+    )
+
 
 @app.route("/file/<file_id>")
-def stream_video(file_id):
+def serve_file(file_id):
+    """
+    İndirilen dosyayı tarayıcıya stream et.
+    Dosya gönderildikten sonra otomatik sil.
+    """
     if not is_valid_id(file_id):
-        return jsonify({"error": "Invalid ID"}), 400
-    fp = get_file_path(file_id)
-    if not fp.exists():
-        return jsonify({"error": "File not found"}), 404
-    
-    # Bekle
-    for _ in range(60):
-        prog = progress_store.get(file_id, {})
-        if prog.get('status') == 'complete':
+        return jsonify({"error": "Geçersiz ID"}), 400
+
+    # İndirme tamamlanana kadar bekle (max 60 saniye)
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        with store_lock:
+            prog = dict(progress_store.get(file_id, {}))
+
+        status = prog.get("status")
+
+        if status == "complete":
             break
-        if prog.get('status') == 'error':
-            return jsonify({"error": "Download failed"}), 500
+        elif status == "error":
+            return jsonify({"error": prog.get("error", "İndirme başarısız")}), 500
+        elif not status:
+            return jsonify({"error": "Bilinmeyen session"}), 404
+
         time.sleep(0.5)
-    
+    else:
+        return jsonify({"error": "Zaman aşımı: download tamamlanamadı"}), 504
+
+    # Gerçek dosya yolunu progress_store'dan al
+    with store_lock:
+        fp_str = progress_store.get(file_id, {}).get("file_path")
+
+    if not fp_str:
+        # Fallback: diskten ara
+        fp = find_output_file(file_id)
+    else:
+        fp = Path(fp_str)
+
+    if fp is None or not fp.exists():
+        return jsonify({"error": "Dosya bulunamadı"}), 404
+
+    file_size = fp.stat().st_size
+    filename  = f"clipdropx_{file_id}.mp4"
+
     @after_this_request
-    def remove_file(response):
-        try:
-            if fp.exists():
-                fp.unlink()
-            if file_id in progress_store:
-                del progress_store[file_id]
-        except:
-            pass
+    def delete_after_send(response):
+        """Response tamamlandıktan sonra dosyayı ve kaydı sil."""
+        def _cleanup():
+            time.sleep(2)  # Stream'in gerçekten bitmesi için küçük bekleme
+            try:
+                fp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            with store_lock:
+                progress_store.pop(file_id, None)
+        threading.Thread(target=_cleanup, daemon=True).start()
         return response
-    
+
     def generate():
-        with open(fp, "rb") as f:
-            while chunk := f.read(CHUNK_SIZE):
-                yield chunk
-    
-    return Response(generate(), mimetype="video/mp4", headers={"Content-Disposition": "attachment; filename=video.mp4"})
+        try:
+            with open(fp, "rb") as f:
+                while True:
+                    chunk = f.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    yield chunk
+        except Exception as e:
+            print(f"[STREAM ERROR] {file_id}: {e}")
+
+    return Response(
+        generate(),
+        mimetype="video/mp4",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length":      str(file_size),
+            "Accept-Ranges":       "bytes",
+        }
+    )
+
 
 @app.route("/delete/<file_id>", methods=["POST", "DELETE"])
-def delete_video(file_id):
-    fp = get_file_path(file_id)
-    try:
-        if fp.exists():
-            fp.unlink()
-        if file_id in progress_store:
-            del progress_store[file_id]
-        return jsonify({"success": True})
-    except:
-        return jsonify({"error": "Delete failed"}), 500
+def delete_file(file_id):
+    if not is_valid_id(file_id):
+        return jsonify({"error": "Geçersiz ID"}), 400
+
+    deleted = []
+    for leftover in glob.glob(os.path.join(TEMP_DIR, f"clipdropx_{file_id}.*")):
+        try:
+            Path(leftover).unlink(missing_ok=True)
+            deleted.append(leftover)
+        except Exception:
+            pass
+
+    with store_lock:
+        progress_store.pop(file_id, None)
+
+    return jsonify({"success": True, "deleted": deleted})
+
 
 @app.route("/robots.txt")
 def robots():
-    return "User-agent: *\nAllow: /\nSitemap: https://clipdropx-server.onrender.com/sitemap.xml\n", 200, {'Content-Type': 'text/plain'}
+    content = "User-agent: *\nAllow: /\n"
+    return content, 200, {"Content-Type": "text/plain"}
 
 @app.route("/sitemap.xml")
 def sitemap():
-    return """<?xml version="1.0" encoding="UTF-8"?>
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://clipdropx-server.onrender.com/</loc><priority>1.0</priority></url>
-</urlset>""", 200, {'Content-Type': 'application/xml'}
+</urlset>"""
+    return xml, 200, {"Content-Type": "application/xml"}
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, threaded=True)
