@@ -128,10 +128,26 @@ def build_format_opts(platform: str, quality: str) -> dict:
             "format_sort": [f"res:{h}", "br", "fps"],
         }
 
-    # ── TikTok, Reddit, Twitter/X, Vimeo, generic ────────────────────────────
-    # These platforms don't reliably support bestvideo+bestaudio selectors.
-    # We always use format="best" and let format_sort do the resolution work.
-    # This way yt-dlp picks the closest available resolution — never errors.
+    # ── Reddit ───────────────────────────────────────────────────────────────
+    # v.redd.it separates video and audio as DASH streams.
+    # MUST use bestvideo+bestaudio or the file will have no audio.
+    if platform == "reddit":
+        if q == "best":
+            fmt = "bestvideo+bestaudio/best"
+        else:
+            fmt = (
+                f"bestvideo[height<={h}]+bestaudio/"
+                f"bestvideo+bestaudio/"
+                f"best[height<={h}]/"
+                f"best"
+            )
+        return {
+            "format": fmt,
+            "format_sort": ["res" if q == "best" else f"res:{h}", "br", "fps"],
+        }
+
+    # ── TikTok, Twitter/X, Vimeo, generic ────────────────────────────────────
+    # These don't reliably support advanced selectors — use format_sort instead.
     sort_res = "res" if q == "best" else f"res:{h}"
     return {
         "format": "best",
