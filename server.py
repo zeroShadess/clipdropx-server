@@ -100,10 +100,16 @@ def download_video_thread(url: str, file_id: str, quality: str):
         'fragment_retries': 5,
         'socket_timeout': 30,
         'progress_hooks': [progress_hook(file_id)],
-        'postprocessors': [{
-            'key': 'FFmpegVideoRemuxer',
-            'preferedformat': 'mp4',
-        }]
+        "postprocessors": [{
+    "key": "FFmpegVideoConvertor",
+    "preferedformat": "mp4",
+}],
+"postprocessor_args": [
+    "-c:v", "libx264",       # Videoyu H.264'e çevir
+    "-preset", "veryfast",   # İşlemi hızlandır (kaliteyi biraz düşürebilir)
+    "-crf", "23",            # Kalite seviyesi (sayı arttıkça kalite düşer, dosya küçülür)
+    "-c:a", "aac"            # Ses formatı
+]
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

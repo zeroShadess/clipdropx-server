@@ -293,9 +293,13 @@
       padding: .95rem;
       font-size: 1rem; font-weight: 800;
       letter-spacing: .01em;
-      position: relative; overflow: hidden;
+      position: relative;
+      overflow: hidden;
       transition: background var(--tr), transform var(--tr), box-shadow var(--tr);
-      display: flex; align-items: center; justify-content: center; gap: .5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: .5rem;
     }
     .btn-download:hover:not(:disabled) {
       background: #00ff6e;
@@ -411,9 +415,12 @@
       border: 1px solid var(--border);
       border-radius: var(--rl);
       padding: 1.5rem;
-      display: flex; flex-direction: column; gap: .9rem;
+      display: flex;
+      flex-direction: column;
+      gap: .9rem;
       transition: transform var(--tr), border-color var(--tr), box-shadow var(--tr);
-      position: relative; overflow: hidden;
+      position: relative;
+      overflow: hidden;
     }
     .info-card::after {
       content: '';
@@ -429,17 +436,21 @@
     .info-card.blue:hover   { border-color: rgba(79,172,254,.35); }
     .info-card.gold:hover   { border-color: rgba(255,209,102,.35); }
     .info-card.red:hover    { border-color: rgba(255,79,79,.35); }
+    .info-card.brown:hover   { border-color: rgba(139, 69, 19, 0.35); }
 
     .card-icon {
       width: 44px; height: 44px;
       border-radius: 12px;
-      display: flex; align-items: center; justify-content: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       font-size: 1.25rem;
     }
     .card-icon.green { background: rgba(0,230,100,.12); }
     .card-icon.blue  { background: rgba(79,172,254,.12); }
     .card-icon.gold  { background: rgba(255,209,102,.12); }
     .card-icon.red   { background: rgba(255,79,79,.12); }
+    .card-icon.brown { background: rgba(255,215,0,.12); }
 
     .card-title {
       font-size: .95rem; font-weight: 700; letter-spacing: -.01em;
@@ -518,8 +529,9 @@
       border-radius: var(--rp); padding: .15rem .5rem;
       letter-spacing: .04em;
     }
-    .platform-badge.supported { background: rgba(0,230,100,.12); color: var(--green); }
-    .platform-badge.partial   { background: rgba(255,209,102,.12); color: var(--gold); }
+    .platform-badge.supported { background: rgba(0,230,100,.12); color: var(--green); border: 1px solid rgba(0,230,100,.25); }
+    .platform-badge.partial   { background: rgba(255,209,102,.12); color: var(--gold); border: 1px solid rgba(255,209,102,.25); }
+    .platform-badge.none      { background: rgba(255,79,79,.12); color: var(--red); border: 1px solid rgba(255,79,79,.25); }
 
     /* ══════════════════════════════════════
        QUALITY TABLE
@@ -723,7 +735,13 @@
           <div class="card-title">Tüm Cihazlar</div>
           <div class="card-desc">Masaüstü, tablet ve mobilde sorunsuz çalışır. Uygulama yüklemeye gerek yok.</div>
         </div>
-      </div>
+        <!-- DÜZELTİLMİŞ APK BUTONU - TIKLANABİLİR -->
+      <div class="info-card brown" onclick="window.open('https://drive.google.com/file/d/1QPqEET4RytmjFfF_deXIerrmUi11_fXu/view?usp=sharing', '_blank')" style="cursor:pointer;">
+  <div class="card-icon brown">📲</div>
+  <div class="card-title">Mobil Uygulama</div>
+  <div class="card-desc">ClipDropX mobil uygulamasını yükle ve her yerde video indir. (Android APK)</div>
+  <span style="font-size:.78rem; color:var(--green); font-weight:600; margin-top:.2rem;">Tıkla & İndir →</span>
+</div>
     </div>
 
     <!-- HOW IT WORKS -->
@@ -770,7 +788,7 @@
         <div class="platform-card">
           <span class="platform-emoji">▶️</span>
           <span class="platform-name">YouTube</span>
-          <span class="platform-badge supported">Tam Destek</span>
+          <span class="platform-badge none">&#x2715; Desteklenmiyor</span>
         </div>
         <div class="platform-card">
           <span class="platform-emoji">📸</span>
@@ -793,13 +811,13 @@
           <span class="platform-badge supported">Tam Destek</span>
         </div>
         <div class="platform-card">
+          <span class="platform-emoji">&#x1F3AC;</span>
+          <span class="platform-name">Netflix</span>
+          <span class="platform-badge none">&#x2715; Desteklenmiyor</span>
+        </div>  
+        <div class="platform-card">
           <span class="platform-emoji">📘</span>
           <span class="platform-name">Facebook</span>
-          <span class="platform-badge partial">Kısmi</span>
-        </div>
-        <div class="platform-card">
-          <span class="platform-emoji">🎮</span>
-          <span class="platform-name">Twitch</span>
           <span class="platform-badge partial">Kısmi</span>
         </div>
         <div class="platform-card">
@@ -877,15 +895,10 @@ let BASE_URL;
 
 if (window.location.protocol === 'file:' || window.location.hostname === '') {
   // Flutter webview'de local file'dan açılıyor
-  // Android emulator: 10.0.2.2 (PC'ye erişim)
-  // Android cihaz: device.local veya IP adresi
-  BASE_URL = 'http://10.0.2.2:5000'; // Android emulator
-  // Gerçek cihazda: BASE_URL = 'http://192.168.x.x:5000'; // PC'nin IP'sini gir
+  BASE_URL = 'http://10.0.2.2:5000';
 } else if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-  // Local web (Live Server vs)
   BASE_URL = 'http://127.0.0.1:5000';
 } else {
-  // Production (Render.com vs)
   BASE_URL = window.location.origin;
 }
 
@@ -937,7 +950,10 @@ btnDownload.addEventListener('click', startDownload);
 
 async function startDownload() {
   const url = urlInput.value.trim();
-  if (!url) return;
+  if (!url) {
+    setStatus('Lütfen bir URL girin.', 'error');
+    return;
+  }
 
   setLoading(true);
   setStatus('Başlatılıyor...', 'info');
@@ -950,16 +966,15 @@ async function startDownload() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, quality: state.quality }),
     });
-    const { id } = await res.json();
-    if (!id) throw new Error('No id');
+    const data = await res.json();
+    const id = data.id;
+    if (!id) throw new Error(data.error || 'ID alınamadı');
 
-    // SSE ile progress takibi
     const evtSource = new EventSource(`${BASE_URL}/progress/${id}`);
     evtSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.status === 'complete') {
         setProgress(100, 'İndirme tamam!');
-        // Dosyayı indir
         const a = document.createElement('a');
         a.href = `${BASE_URL}/file/${id}`;
         a.download = 'video.mp4';
@@ -994,21 +1009,6 @@ function setProgress(pct, statusText) {
   progressFill.style.width = pct + '%';
   progressPct.textContent = '%' + Math.round(pct);
   if (statusText) progressStatus.textContent = statusText;
-}
-
-function animateProgress(from, to, durationMs, statusText) {
-  return new Promise(resolve => {
-    const steps = 40;
-    const stepTime = durationMs / steps;
-    const stepSize = (to - from) / steps;
-    let current = from;
-    if (statusText) progressStatus.textContent = statusText;
-    const interval = setInterval(() => {
-      current += stepSize;
-      if (current >= to) { current = to; clearInterval(interval); resolve(); }
-      setProgress(current, null);
-    }, stepTime);
-  });
 }
 
 /* ── Status ── */
@@ -1059,23 +1059,6 @@ btnClearHist.addEventListener('click', () => {
   try { localStorage.removeItem('cdx-history'); } catch (_) {}
   renderHistory();
 });
-
-/* ── Shake animation ── */
-function shake(el) {
-  el.style.animation = 'none';
-  el.style.transition = 'none';
-  let start = null;
-  const shakes = [0, -6, 6, -4, 4, -2, 2, 0];
-  function step(ts) {
-    if (!start) start = ts;
-    const progress = ts - start;
-    const idx = Math.min(Math.floor(progress / 50), shakes.length - 1);
-    el.style.transform = `translateX(${shakes[idx]}px)`;
-    if (idx < shakes.length - 1) requestAnimationFrame(step);
-    else el.style.transform = '';
-  }
-  requestAnimationFrame(step);
-}
 
 /* ── Init ── */
 renderHistory();
