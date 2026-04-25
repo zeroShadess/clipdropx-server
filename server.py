@@ -218,6 +218,23 @@ def delete_video(file_id):
         return jsonify({"success": True})
     except:
         return jsonify({"error": "Delete failed"}), 500
+@app.route("/robots.txt")
+def robots():
+    return """User-agent: *
+Allow: /
+Sitemap: https://clipdropx-server.onrender.com/sitemap.xml
+""", 200, {'Content-Type': 'text/plain'}
+
+@app.route("/sitemap.xml")
+def sitemap():
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://clipdropx-server.onrender.com/</loc>
+    <priority>1.0</priority>
+  </url>
+</urlset>
+""", 200, {'Content-Type': 'application/xml'}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, threaded=True)
