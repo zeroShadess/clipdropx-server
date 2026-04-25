@@ -1,5 +1,5 @@
 """
-ClipDropX - Production Server (Tam & Düzeltilmiş - H.264 Öncelikli)
+ClipDropX - Production Server (Tam & Düzeltilmiş)
 """
 
 import os
@@ -78,31 +78,24 @@ def cleanup_old_files():
     except Exception:
         pass
 
-# ========== FIX 1: H.264 öncelikli format seçimi ==========
 def quality_to_format(quality: str) -> str:
     q = quality.lower().strip()
-    if q == "best":
-        # En iyi kalite, H.264 tercihli
-        return "bestvideo[vcodec^=avc1]+bestaudio/best"
-    
     height_map = {"2160": 2160, "4k": 2160, "1080": 1080, "720": 720, "480": 480}
+    if q == "best":
+        return "bestvideo+bestaudio/best"
     h = height_map.get(q, 1080)
-    
-    # Önce H.264 (avc1) codec'li MP4, sonra diğer codec'ler, son herhangi
     return (
-        f"bestvideo[height<={h}][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/"
-        f"bestvideo[height<={h}][vcodec^=avc1]+bestaudio/bestaudio/"
+        f"bestvideo[height<={h}]+bestaudio/"
         f"best[height<={h}]"
     )
 
 def get_format_sort(quality: str) -> list:
     q = quality.lower().strip()
     if q == "best":
-        return ["res", "br", "fps", "codec:avc1"]  # codec önceliği ekle
+        return ["res", "br", "fps"]
     height_map = {"2160": 2160, "4k": 2160, "1080": 1080, "720": 720, "480": 480}
     h = height_map.get(q, 1080)
-    return [f"res:{h}", "codec:avc1", "br", "fps"]  # H.264 önce gelsin
-# ========== FIX SONU ==========
+    return [f"res:{h}", "br", "fps"]
 
 def make_progress_hook(file_id: str):
     def hook(d: dict):
