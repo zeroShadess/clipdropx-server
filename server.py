@@ -86,33 +86,20 @@ def get_height(quality: str) -> int:
 
 def build_format_opts(platform: str, quality: str) -> dict:
     """
-    Returns a dict with 'format' and optionally 'format_sort' keys.
-
-    Strategy per platform:
-    - YouTube  : standard bestvideo+bestaudio with height cap, format_sort for quality ladder
-    - TikTok   : height-filtered sort, broad fallback (TikTok doesn't support advanced selectors well)
-    - Instagram : similar to TikTok — sort by height, fallback to best
-    - Twitter/X : sort approach, fallback to best
-    - generic   : sort approach with broad fallback
+    Platform-aware format selection with broad fallback chains.
+    Platforms that don't support advanced selectors (TikTok, Reddit, Twitter)
+    always use format_sort instead, so they never throw "format not available".
     """
     q = quality.lower().strip()
     h = get_height(quality)
 
-    if q == "best":
-        if platform == "youtube":
+    # ── YouTube ──────────────────────────────────────────────────────────────
+    if platform == "youtube":
+        if q == "best":
             return {
                 "format": "bestvideo+bestaudio/best",
                 "format_sort": ["res", "br", "fps"],
             }
-        else:
-            # For non-YouTube, "best" = just let yt-dlp pick the best available
-            return {
-                "format": "best",
-                "format_sort": ["res", "br", "fps"],
-            }
-
-    if platform == "youtube":
-        # YouTube supports advanced selectors perfectly
         fmt = (
             f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/"
             f"bestvideo[height<={h}]+bestaudio/"
@@ -124,17 +111,13 @@ def build_format_opts(platform: str, quality: str) -> dict:
             "format_sort": [f"res:{h}", "br", "fps"],
         }
 
-    if platform == "tiktok":
-        # TikTok: format selectors with height work unreliably.
-        # Use format_sort to prefer the requested resolution,
-        # then fall back broadly so it never errors out.
-        return {
-            "format": "best",           # broad selector — yt-dlp will sort below
-            "format_sort": [f"res:{h}", "br", "fps"],
-        }
-
+    # ── Instagram ────────────────────────────────────────────────────────────
     if platform == "instagram":
-        # Instagram DASH streams work with height selector but need a fallback
+        if q == "best":
+            return {
+                "format": "bestvideo+bestaudio/best",
+                "format_sort": ["res", "br", "fps"],
+            }
         fmt = (
             f"bestvideo[height<={h}]+bestaudio/"
             f"best[height<={h}]/"
@@ -145,15 +128,14 @@ def build_format_opts(platform: str, quality: str) -> dict:
             "format_sort": [f"res:{h}", "br", "fps"],
         }
 
-    # twitter, reddit, vimeo, generic — safe middle ground
-    fmt = (
-        f"bestvideo[height<={h}]+bestaudio/"
-        f"best[height<={h}]/"
-        f"best"
-    )
+    # ── TikTok, Reddit, Twitter/X, Vimeo, generic ────────────────────────────
+    # These platforms don't reliably support bestvideo+bestaudio selectors.
+    # We always use format="best" and let format_sort do the resolution work.
+    # This way yt-dlp picks the closest available resolution — never errors.
+    sort_res = "res" if q == "best" else f"res:{h}"
     return {
-        "format": fmt,
-        "format_sort": [f"res:{h}", "br", "fps"],
+        "format": "best",
+        "format_sort": [sort_res, "br", "fps"],
     }
 
 def find_output_file(file_id: str):
@@ -265,9 +247,39 @@ def download_thread(url: str, file_id: str, quality: str):
                 Path(leftover).unlink(missing_ok=True)
             except Exception:
                 pass
+        friendly = _friendly_error(str(e), quality)
         with store_lock:
-            progress_store[file_id] = {"status": "error", "error": str(e)}
+            progress_store[file_id] = {"status": "error", "error": friendly}
         print(f"[ERROR] {file_id}: {e}")
+
+
+def _friendly_error(raw: str, quality: str) -> str:
+    """Converts raw yt-dlp errors into readable Turkish messages."""
+    r = raw.lower()
+    if "requested format is not available" in r or "format is not available" in r:
+        q_label = quality if quality.lower() != "best" else "en iyi"
+        return (
+            f"Bu video '{q_label}' kalitesini desteklemiyor. "
+            "Lütfen farklı bir kalite seçin."
+        )
+    if "private video" in r or ("private" in r and "video" in r):
+        return "Bu video gizli (private). İndirilemiyor."
+    if "login" in r or "sign in" in r or "authentication" in r:
+        return "Bu içerik giriş gerektiriyor. İndirilemiyor."
+    if "copyright" in r:
+        return "Bu video telif hakkı nedeniyle kullanılamıyor."
+    if "geo" in r or "not available in your country" in r:
+        return "Bu video bulunduğunuz ülkede kullanılamıyor."
+    if "unable to extract" in r or "no video formats found" in r:
+        return "Video bilgisi alınamadı. Bağlantıyı kontrol edin veya daha sonra tekrar deneyin."
+    if "urlopen error" in r or "connection" in r or "network" in r:
+        return "Ağ bağlantı hatası. Lütfen tekrar deneyin."
+    if "404" in r:
+        return "Video bulunamadı (404). Bağlantı geçersiz ya da video silinmiş olabilir."
+    if "too large" in r or "cok buyuk" in r:
+        return raw  # already Turkish from our own code
+    return "İndirme başarısız. Bağlantıyı veya kalite seçimini kontrol edin."
+
 
 # ---------------------------------------------------------------------------
 # Routes
