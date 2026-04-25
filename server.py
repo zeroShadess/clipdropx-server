@@ -1,5 +1,5 @@
 """
-ClipDropX - Production Ready (Optimized for Mobile + Fast)
+ClipDropX - Final Optimized (H.264 priority + Auto-delete after download)
 """
 
 import os
@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import yt_dlp
-from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory
+from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory, after_this_request
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -26,29 +26,27 @@ CLEANUP_HOURS = int(os.environ.get("CLEANUP_HOURS", 2))
 TEMP_DIR = tempfile.gettempdir()
 CHUNK_SIZE = 1024 * 1024
 
-# Progress store
 progress_store = {}
 
 def quality_to_format(quality: str) -> str:
     """
-    Mobil uyumlu format seçimi:
-    - Öncelik H.264 (avc1) codec'li MP4
-    - Yoksa fallback
+    Kalite seçeneğine göre yt-dlp format string'i.
+    Öncelik H.264 (avc1), sonra diğer codec'ler.
     """
     q = quality.lower()
-    base = "[ext=mp4]"
-    
     if q == "2160" or q == "4k":
-        return f"bestvideo[height<=2160][vcodec^=avc1]{base}+bestaudio[ext=m4a]/best[height<=2160]{base}/best"
+        video_filter = "bestvideo[height<=2160][ext=mp4]"
     elif q == "1080":
-        # Önce H.264 1080p, yoksa herhangi 1080p
-        return f"bestvideo[height<=1080][vcodec^=avc1]{base}+bestaudio[ext=m4a]/bestvideo[height<=1080]{base}+bestaudio[ext=m4a]/best[height<=1080]{base}/best"
+        video_filter = "bestvideo[height<=1080][ext=mp4]"
     elif q == "720":
-        return f"bestvideo[height<=720][vcodec^=avc1]{base}+bestaudio[ext=m4a]/bestvideo[height<=720]{base}+bestaudio[ext=m4a]/best[height<=720]{base}/best"
+        video_filter = "bestvideo[height<=720][ext=mp4]"
     elif q == "480":
-        return f"bestvideo[height<=480][vcodec^=avc1]{base}+bestaudio[ext=m4a]/bestvideo[height<=480]{base}+bestaudio[ext=m4a]/best[height<=480]{base}/best"
-    else:  # best - en yüksek kalite, H.264 tercihli
-        return f"bestvideo[vcodec^=avc1]{base}+bestaudio[ext=m4a]/best{base}"
+        video_filter = "bestvideo[height<=480][ext=mp4]"
+    else:  # best
+        video_filter = "bestvideo[ext=mp4]"
+    
+    # H.264 öncelikli: video_filter içinde vcodec^=avc1 olan varsa onu al
+    return f"{video_filter}[vcodec^=avc1]+bestaudio[ext=m4a]/{video_filter}+bestaudio[ext=m4a]/{video_filter}/best"
 
 def is_valid_url(url: str) -> bool:
     allowed = ["tiktok.com", "instagram.com", "twitter.com", "x.com", "reddit.com", "vimeo.com", "youtube.com", "youtu.be"]
@@ -96,8 +94,6 @@ def progress_hook(download_id: str):
 def download_video_thread(url: str, file_id: str, quality: str):
     output_path = str(get_file_path(file_id))
     format_str = quality_to_format(quality)
-    
-    # 🚀 OPTİMİZE EDİLMİŞ AYARLAR - RE-ENCODE YOK!
     ydl_opts = {
         'format': format_str,
         'outtmpl': output_path,
@@ -109,17 +105,15 @@ def download_video_thread(url: str, file_id: str, quality: str):
         'fragment_retries': 5,
         'socket_timeout': 30,
         'progress_hooks': [progress_hook(file_id)],
-        # ✅ SADECE KABI DEĞİŞTİR (RE-ENCODE YAPMA)
+        # Sadece remux - re-encode yok!
         'postprocessors': [{
             'key': 'FFmpegVideoRemuxer',
             'preferedformat': 'mp4',
-        }]
+        }],
     }
-    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-        
         size = os.path.getsize(output_path)
         max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
         if size > max_bytes:
@@ -139,11 +133,7 @@ def home():
     try:
         return send_from_directory('.', 'index.html')
     except:
-        return jsonify({
-            "service": "ClipDropX API", 
-            "status": "running", 
-            "endpoints": ["/download", "/progress/<id>", "/file/<id>", "/delete/<id>"]
-        })
+        return jsonify({"service": "ClipDropX API", "status": "running", "endpoints": ["/download", "/progress/<id>", "/file/<id>", "/delete/<id>"]})
 
 @app.route("/health")
 def health():
@@ -174,14 +164,12 @@ def download():
 def progress_stream(file_id):
     if not is_valid_id(file_id):
         return jsonify({"error": "Invalid ID"}), 400
-    
     def generate():
         last_percent = -1
         while True:
             prog = progress_store.get(file_id, {})
             status = prog.get('status', 'starting')
             percent = prog.get('percent', 0)
-            
             if status == 'complete':
                 yield f"data: {json.dumps({'percent': 100, 'status': 'complete', 'file_id': file_id})}\n\n"
                 break
@@ -191,21 +179,19 @@ def progress_stream(file_id):
             elif percent != last_percent:
                 last_percent = percent
                 yield f"data: {json.dumps({'percent': percent, 'status': 'downloading'})}\n\n"
-            time.sleep(0.3)  # Daha hızlı güncelleme
-    
+            time.sleep(0.5)
     return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
 @app.route("/file/<file_id>")
 def stream_video(file_id):
     if not is_valid_id(file_id):
         return jsonify({"error": "Invalid ID"}), 400
-    
     fp = get_file_path(file_id)
     if not fp.exists():
         return jsonify({"error": "File not found"}), 404
     
-    # İndirme tamamlanana kadar bekle (en fazla 60 saniye)
-    for _ in range(120):  # 60 saniye timeout
+    # İndirme tamamlanmamışsa bekle
+    for _ in range(60):
         prog = progress_store.get(file_id, {})
         if prog.get('status') == 'complete':
             break
@@ -213,23 +199,24 @@ def stream_video(file_id):
             return jsonify({"error": "Download failed"}), 500
         time.sleep(0.5)
     
-    # Eğer hala tamamlanmadıysa dosya yok veya eksik
-    if not fp.exists():
-        return jsonify({"error": "File not ready"}), 404
+    # Stream sonrası dosyayı sil
+    @after_this_request
+    def remove_file(response):
+        try:
+            if fp.exists():
+                fp.unlink()
+            if file_id in progress_store:
+                del progress_store[file_id]
+        except:
+            pass
+        return response
     
     def generate():
         with open(fp, "rb") as f:
             while chunk := f.read(CHUNK_SIZE):
                 yield chunk
     
-    return Response(
-        generate(), 
-        mimetype="video/mp4", 
-        headers={
-            "Content-Disposition": "attachment; filename=video.mp4",
-            "Content-Type": "video/mp4"
-        }
-    )
+    return Response(generate(), mimetype="video/mp4", headers={"Content-Disposition": "attachment; filename=video.mp4"})
 
 @app.route("/delete/<file_id>", methods=["POST", "DELETE"])
 def delete_video(file_id):
