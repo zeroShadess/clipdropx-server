@@ -1,5 +1,5 @@
 """
-ClipDropX - Final Optimized (H.264 priority + Auto-delete after download)
+ClipDropX - Final Production (No re-encode, H.264 priority, auto-delete)
 """
 
 import os
@@ -19,7 +19,6 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app, origins="*")
 
-# ========== Konfigürasyon ==========
 PORT = int(os.environ.get("PORT", 5000))
 MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB", 500))
 CLEANUP_HOURS = int(os.environ.get("CLEANUP_HOURS", 2))
@@ -29,24 +28,21 @@ CHUNK_SIZE = 1024 * 1024
 progress_store = {}
 
 def quality_to_format(quality: str) -> str:
-    """
-    Kalite seçeneğine göre yt-dlp format string'i.
-    Öncelik H.264 (avc1), sonra diğer codec'ler.
-    """
     q = quality.lower()
+    # Base video filter
     if q == "2160" or q == "4k":
-        video_filter = "bestvideo[height<=2160][ext=mp4]"
+        vf = "bestvideo[height<=2160][ext=mp4]"
     elif q == "1080":
-        video_filter = "bestvideo[height<=1080][ext=mp4]"
+        vf = "bestvideo[height<=1080][ext=mp4]"
     elif q == "720":
-        video_filter = "bestvideo[height<=720][ext=mp4]"
+        vf = "bestvideo[height<=720][ext=mp4]"
     elif q == "480":
-        video_filter = "bestvideo[height<=480][ext=mp4]"
-    else:  # best
-        video_filter = "bestvideo[ext=mp4]"
+        vf = "bestvideo[height<=480][ext=mp4]"
+    else:
+        vf = "bestvideo[ext=mp4]"
     
-    # H.264 öncelikli: video_filter içinde vcodec^=avc1 olan varsa onu al
-    return f"{video_filter}[vcodec^=avc1]+bestaudio[ext=m4a]/{video_filter}+bestaudio[ext=m4a]/{video_filter}/best"
+    # Önce H.264 (avc1) dene, sonra herhangi bir codec
+    return f"{vf}[vcodec^=avc1]+bestaudio[ext=m4a]/{vf}+bestaudio[ext=m4a]/{vf}/best"
 
 def is_valid_url(url: str) -> bool:
     allowed = ["tiktok.com", "instagram.com", "twitter.com", "x.com", "reddit.com", "vimeo.com", "youtube.com", "youtu.be"]
@@ -105,7 +101,6 @@ def download_video_thread(url: str, file_id: str, quality: str):
         'fragment_retries': 5,
         'socket_timeout': 30,
         'progress_hooks': [progress_hook(file_id)],
-        # Sadece remux - re-encode yok!
         'postprocessors': [{
             'key': 'FFmpegVideoRemuxer',
             'preferedformat': 'mp4',
@@ -127,13 +122,12 @@ def download_video_thread(url: str, file_id: str, quality: str):
         if os.path.exists(output_path):
             os.remove(output_path)
 
-# ========== Endpointler ==========
 @app.route("/")
 def home():
     try:
         return send_from_directory('.', 'index.html')
     except:
-        return jsonify({"service": "ClipDropX API", "status": "running", "endpoints": ["/download", "/progress/<id>", "/file/<id>", "/delete/<id>"]})
+        return jsonify({"service": "ClipDropX API", "status": "running"})
 
 @app.route("/health")
 def health():
@@ -190,7 +184,7 @@ def stream_video(file_id):
     if not fp.exists():
         return jsonify({"error": "File not found"}), 404
     
-    # İndirme tamamlanmamışsa bekle
+    # Bekle
     for _ in range(60):
         prog = progress_store.get(file_id, {})
         if prog.get('status') == 'complete':
@@ -199,7 +193,6 @@ def stream_video(file_id):
             return jsonify({"error": "Download failed"}), 500
         time.sleep(0.5)
     
-    # Stream sonrası dosyayı sil
     @after_this_request
     def remove_file(response):
         try:
@@ -232,21 +225,14 @@ def delete_video(file_id):
 
 @app.route("/robots.txt")
 def robots():
-    return """User-agent: *
-Allow: /
-Sitemap: https://clipdropx-server.onrender.com/sitemap.xml
-""", 200, {'Content-Type': 'text/plain'}
+    return "User-agent: *\nAllow: /\nSitemap: https://clipdropx-server.onrender.com/sitemap.xml\n", 200, {'Content-Type': 'text/plain'}
 
 @app.route("/sitemap.xml")
 def sitemap():
     return """<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>https://clipdropx-server.onrender.com/</loc>
-    <priority>1.0</priority>
-  </url>
-</urlset>
-""", 200, {'Content-Type': 'application/xml'}
+  <url><loc>https://clipdropx-server.onrender.com/</loc><priority>1.0</priority></url>
+</urlset>""", 200, {'Content-Type': 'application/xml'}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, threaded=True)
