@@ -93,11 +93,6 @@ def cleanup_old_files():
         pass
 
 def quality_to_format(quality: str) -> str:
-    """
-    Güvenilir format seçimi.
-    Önce mp4+m4a (ffmpeg merge gerektirmez veya hızlı merge),
-    fallback olarak any video+audio, son olarak best.
-    """
     q = quality.lower().strip()
 
     height_map = {
@@ -105,13 +100,11 @@ def quality_to_format(quality: str) -> str:
         "1080": 1080,
         "720":  720,
         "480":  480,
-        "360":  360,
     }
 
     if q == "best":
-        # Mevcut en iyi kalite
         return (
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo+bestaudio[ext=m4a]/"
             "bestvideo+bestaudio/"
             "best"
         )
@@ -119,15 +112,13 @@ def quality_to_format(quality: str) -> str:
     h = height_map.get(q, 1080)
 
     return (
-        # 1. Tercih: mp4 video + m4a ses (hızlı merge / no-remux)
-        f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/"
-        # 2. Tercih: Herhangi video + m4a ses
+        # En iyi video (VP9/AV1/H264 fark etmez) + m4a ses → ffmpeg merge
         f"bestvideo[height<={h}]+bestaudio[ext=m4a]/"
-        # 3. Tercih: Herhangi video + herhangi ses
+        # m4a yoksa herhangi ses
         f"bestvideo[height<={h}]+bestaudio/"
-        # 4. Fallback: tek dosya o yükseklikte
+        # Tek stream fallback
         f"best[height<={h}]/"
-        # 5. Son çare: en iyi mevcut
+        # Son çare
         "best"
     )
 
