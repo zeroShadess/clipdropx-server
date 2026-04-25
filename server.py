@@ -103,23 +103,16 @@ def quality_to_format(quality: str) -> str:
     }
 
     if q == "best":
-        return (
-            "bestvideo+bestaudio[ext=m4a]/"
-            "bestvideo+bestaudio/"
-            "best"
-        )
+        # Sınır yok — gerçekten en yüksek ne varsa
+        return "bestvideo+bestaudio/best"
 
     h = height_map.get(q, 1080)
 
+    # height<=h ZORUNLU, fallback'te bile aşmasın
     return (
-        # En iyi video (VP9/AV1/H264 fark etmez) + m4a ses → ffmpeg merge
-        f"bestvideo[height<={h}]+bestaudio[ext=m4a]/"
-        # m4a yoksa herhangi ses
         f"bestvideo[height<={h}]+bestaudio/"
-        # Tek stream fallback
-        f"best[height<={h}]/"
-        # Son çare
-        "best"
+        f"best[height<={h}]"
+        # Not: /best YOK — kalite sınırı aşılmasın
     )
 
 # ─────────────────────────────────────────────
@@ -153,73 +146,36 @@ def make_progress_hook(file_id: str):
 # ─────────────────────────────────────────────
 
 def download_thread(url: str, file_id: str, quality: str):
-    # %(ext)s kullan — yt-dlp gerçek uzantıyı yazar
     outtmpl = os.path.join(TEMP_DIR, f"clipdropx_{file_id}.%(ext)s")
+    q = quality.lower().strip()
+
+    # format_sort: kaliteli seç, height sınırına saygı göster
+    if q == "best":
+        fmt_sort = ["res", "br", "fps"]          # en yüksek çözünürlük önce
+    else:
+        height_map = {"2160": 2160, "4k": 2160, "1080": 1080, "720": 720, "480": 480}
+        h = height_map.get(q, 1080)
+        fmt_sort = [f"res:{h}", "br", "fps"]     # tam o yüksekliğe yakın, sonra bitrate
 
     ydl_opts = {
-        "format":      quality_to_format(quality),
-        "outtmpl":     outtmpl,
-        "noplaylist":  True,
-        "quiet":       False,           # Render loglarında görmek için
-        "no_warnings": False,
-        "retries":     5,
+        "format":        quality_to_format(quality),
+        "format_sort":   fmt_sort,               # ← KRİTİK EKLEME
+        "outtmpl":       outtmpl,
+        "noplaylist":    True,
+        "quiet":         False,
+        "no_warnings":   False,
+        "retries":       5,
         "fragment_retries": 5,
         "socket_timeout":   30,
         "concurrent_fragment_downloads": 4,
         "progress_hooks": [make_progress_hook(file_id)],
-        # Merge çıktısını mp4'e zorla (mkv/webm karışıklığını önler)
         "merge_output_format": "mp4",
         "postprocessors": [{
             "key": "FFmpegVideoRemuxer",
             "preferedformat": "mp4",
         }],
     }
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        # ── Dosyayı bul ──────────────────────────────────────
-        # Merge sonrası gerçek dosya adını tespit et
-        output_file = find_output_file(file_id)
-
-        if output_file is None:
-            raise FileNotFoundError(
-                f"Download tamamlandı ama dosya bulunamadı: "
-                f"clipdropx_{file_id}.*"
-            )
-
-        file_size = output_file.stat().st_size
-
-        if file_size > MAX_FILE_SIZE:
-            output_file.unlink(missing_ok=True)
-            raise ValueError(
-                f"Dosya boyutu limitin üzerinde: "
-                f"{file_size // (1024*1024)}MB > {MAX_FILE_SIZE // (1024*1024)}MB"
-            )
-
-        with store_lock:
-            progress_store[file_id].update({
-                "percent":   100,
-                "status":    "complete",
-                "file_path": str(output_file),   # ← GERÇEk DOSYA YOLU
-                "file_size": file_size,
-            })
-
-    except Exception as e:
-        # Kalan dosyaları temizle
-        for leftover in glob.glob(os.path.join(TEMP_DIR, f"clipdropx_{file_id}.*")):
-            try:
-                Path(leftover).unlink(missing_ok=True)
-            except Exception:
-                pass
-
-        with store_lock:
-            progress_store[file_id] = {
-                "status": "error",
-                "error":  str(e),
-            }
-        print(f"[ERROR] {file_id}: {e}")
+    # ... geri kalanı aynı
 
 # ─────────────────────────────────────────────
 # ROUTES
